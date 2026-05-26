@@ -58,12 +58,23 @@ def list_current_files() -> list[str]:
         ['git', '-c', 'core.quotePath=false', 'ls-files', '-z'],
         encoding='utf-8',
     ).split('\0')
+    # Submodule gitlinks (mode 160000) appear in `ls-files` but `git hash-object`
+    # cannot hash them — exits 128 and crashes the whole pipeline. Filter them out.
+    stage = subprocess.check_output(
+        ['git', '-c', 'core.quotePath=false', 'ls-files', '--stage', '-z'],
+        encoding='utf-8',
+    ).split('\0')
+    gitlinks = {
+        rec.split('\t', 1)[1]
+        for rec in stage
+        if rec.startswith('160000 ') and '\t' in rec
+    }
     untracked = subprocess.check_output(
         ['git', '-c', 'core.quotePath=false', 'ls-files', '--others', '--exclude-standard', '-z'],
         encoding='utf-8',
     ).split('\0')
     all_files = set(tracked) | set(untracked)
-    return sorted(f for f in all_files if f and not should_skip(f))
+    return sorted(f for f in all_files if f and f not in gitlinks and not should_skip(f))
 
 
 def hash_files(paths: list[str]) -> dict[str, str]:

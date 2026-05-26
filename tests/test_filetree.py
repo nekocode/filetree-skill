@@ -387,6 +387,41 @@ class TestIntegration:
         assert todo2['renamed'][0]['new_path'] == new
 
 
+    def test_submodule_gitlink_is_skipped(self, git_repo, tmp_path_factory):
+        """Submodule gitlinks (mode 160000) must not enter the file list.
+
+        Regression: `git ls-files` lists submodule paths, but `git hash-object`
+        cannot hash a gitlink and exits 128, crashing the whole pipeline.
+        """
+        # External source repo for the submodule. Must live outside git_repo so
+        # `git submodule add` treats it as a foreign URL, not a nested worktree.
+        src = tmp_path_factory.mktemp('sub-src')
+        subprocess.run(['git', 'init', '-q'], check=True, cwd=src)
+        (src / 'README.md').write_text('sub\n')
+        subprocess.run(['git', 'add', '-A'], check=True, cwd=src)
+        subprocess.run(['git', 'commit', '-q', '-m', 'init'], check=True, cwd=src)
+
+        # Real file alongside the submodule so we can assert it survives.
+        Path('a.py').write_text('print(1)\n')
+
+        # Recent git versions require opt-in for file:// submodule URLs.
+        subprocess.run(
+            ['git', '-c', 'protocol.file.allow=always',
+             'submodule', 'add', '-q', f'file://{src}', 'vendor/sub'],
+            check=True,
+        )
+
+        files = filetree.list_current_files()
+        assert 'a.py' in files
+        assert 'vendor/sub' not in files
+
+        # Full pipeline: `git hash-object` previously crashed here on the gitlink.
+        result = filetree.cmd_todo()
+        added_paths = {e['path'] for e in result['added']}
+        assert 'a.py' in added_paths
+        assert 'vendor/sub' not in added_paths
+
+
 class TestEdgeCases:
     def test_hash_files_empty(self):
         """Empty paths short-circuit without calling git."""
