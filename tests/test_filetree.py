@@ -471,3 +471,39 @@ class TestEdgeCases:
         for h in hashes.values():
             assert len(h) == 8
             int(h, 16)  # Raises if not hex.
+
+    def test_wire_before_todo_captures_post_wire_hash(self, git_repo):
+        """`/filetree:init` invariant: editing CLAUDE.md before `todo` must put
+        the post-wire hash in `added`. Locks in the ordering guarantee that
+        the init.md flow promises (and that prevents phantom drift on the
+        first `/filetree:lint`)."""
+        # Pre-wire CLAUDE.md exists with original rules.
+        Path('CLAUDE.md').write_text('# Rules\n\n- be terse\n', encoding='utf-8')
+        pre_wire_hash = filetree.hash_files(['CLAUDE.md'])['CLAUDE.md']
+
+        # Simulate step 2: append the FILETREE.md reference bullet.
+        Path('CLAUDE.md').write_text(
+            '# Rules\n\n- be terse\n\n## References\n\n'
+            '- `./FILETREE.md` — per-file purpose index. Read before ls/grep.\n',
+            encoding='utf-8',
+        )
+        post_wire_hash = filetree.hash_files(['CLAUDE.md'])['CLAUDE.md']
+        assert post_wire_hash != pre_wire_hash
+
+        # Step 3: `todo` must capture the post-wire hash, not the pre-wire one.
+        result = filetree.cmd_todo()
+        claude_entry = next(a for a in result['added'] if a['path'] == 'CLAUDE.md')
+        assert claude_entry['hash'] == post_wire_hash
+
+    def test_gitignored_claude_md_absent_from_manifest(self, git_repo):
+        """Gitignored CLAUDE.md never enters the manifest — documents the
+        caveat init.md step 3 calls out. If list_current_files() ever stops
+        honoring .gitignore, this test catches the change."""
+        Path('.gitignore').write_text('CLAUDE.md\n', encoding='utf-8')
+        Path('CLAUDE.md').write_text('# private\n', encoding='utf-8')
+
+        result = filetree.cmd_todo()
+        added_paths = {a['path'] for a in result['added']}
+        assert 'CLAUDE.md' not in added_paths
+        # .gitignore itself, on the other hand, IS tracked-by-untracked-unignored.
+        assert '.gitignore' in added_paths

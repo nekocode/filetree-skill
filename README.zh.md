@@ -43,9 +43,16 @@ claude --plugin-dir .
 
 所有命令都不会自动 commit `FILETREE.md`，diff 留给你审。
 
-## 接入 CLAUDE.md
+## 接入 CLAUDE.md / AGENTS.md
 
-让后续 session 优先查 `FILETREE.md`。在项目 `CLAUDE.md` 里加一条引用：
+`/filetree:init` 首次执行时会顺手做 —— 扫 repo 根的 `CLAUDE.md` / `AGENTS.md`，已经引用 `FILETREE.md` 的跳过，剩下的按文件原有结构提议一条引用 bullet（位置和 bullet 风格自适应），每次落盘前你都先确认。**wire 先于 hash**，post-wire 内容直接进 manifest，无需二次刷新。
+
+注意事项：
+
+- `CLAUDE.md` 与 `AGENTS.md` 都不存在时，plugin 不会替你创建 —— 你自己挑要不要建。建完重跑 `/filetree:init` 即可 wire。
+- wire 只在 init 时做一次。后续才加 `CLAUDE.md` / `AGENTS.md`，重跑 `/filetree:init`（已存在的 `FILETREE.md` 会问要不要覆盖）或者手动接。
+
+想手动接入，往 `CLAUDE.md` 里加这样一行：
 
 ```markdown
 - `./FILETREE.md` —— 各文件职责索引。鸟瞰仓库 / 定位实现前先读，可代替 `ls` 与 `grep`。
