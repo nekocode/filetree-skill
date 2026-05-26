@@ -43,6 +43,16 @@ After editing `commands/` or `SKILL.md`, run `/reload-plugins` inside the sessio
 
 All commands refuse to commit `FILETREE.md`. You review the diff and commit yourself.
 
+## Wire it into CLAUDE.md
+
+Tell future sessions to consult `FILETREE.md` first. Add a reference to your project's `CLAUDE.md`:
+
+```markdown
+- `./FILETREE.md` — Per-file purpose index. Read before `ls` / `grep` when overviewing the repo or locating an implementation.
+```
+
+The agent then treats `FILETREE.md` as a cheap index — one read replaces dozens of `ls` / `grep` / `cat` calls during orientation.
+
 ## How It Works
 
 ### Manifest format
@@ -91,10 +101,6 @@ filetree.py apply
 
 On a healthy `update`, **80%+ of `changed` items should resolve to `"UNCHANGED"`** — refactors, formatting, comment edits, bug fixes, small additions almost always leave a file's purpose intact. The LLM emits a 4-byte `"UNCHANGED"` reply; `apply` refreshes the hash and keeps the old summary. The manifest itself carries the memory of "I already reviewed this version" — no separate cache needed.
 
-### `${CLAUDE_PLUGIN_ROOT}`
-
-All commands resolve scripts via `${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py`. Claude Code rewrites this to an absolute path at runtime, so plugin-installed and embedded use cases work the same way.
-
 ## Compatibility
 
 | Requirement | Version | Notes |
@@ -102,8 +108,6 @@ All commands resolve scripts via `${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/
 | `git` | any modern release | Required at runtime; non-git repos fail fast with a clear error |
 | `python` | ≥ 3.9 | Uses PEP 585 `list[dict]` builtin generics. Stdlib only — zero third-party deps |
 | Claude Code | any | Plugin format. `claude` is shipped as a native binary; Node is not required |
-
-Shebang is `#!/usr/bin/env python3`. Commands invoke the script as bare `python` to stay portable across Linux (`python` aliased to python3), macOS (pyenv / brew), and Windows (installer registers `python.exe` only).
 
 ## Development
 

@@ -43,6 +43,16 @@ claude --plugin-dir .
 
 所有命令都不会自动 commit `FILETREE.md`，diff 留给你审。
 
+## 接入 CLAUDE.md
+
+让后续 session 优先查 `FILETREE.md`。在项目 `CLAUDE.md` 里加一条引用：
+
+```markdown
+- `./FILETREE.md` —— 各文件职责索引。鸟瞰仓库 / 定位实现前先读，可代替 `ls` 与 `grep`。
+```
+
+Agent 就会把 `FILETREE.md` 当索引读 —— 一次读取，省掉摸索阶段几十次 `ls` / `grep` / `cat`。
+
 ## 工作原理
 
 ### Manifest 格式
@@ -91,10 +101,6 @@ filetree.py apply
 
 健康的 update 中，**80%+ 的 `changed` 项目应输出 `"UNCHANGED"`** —— refactor、格式化、改注释、修 bug、小补充，几乎不改文件 purpose。LLM 回 4 字节 `"UNCHANGED"`；`apply` 只刷新 hash 保留旧摘要。Manifest 自身承担「我已审过这个版本」的记忆 —— 不需要独立 cache。
 
-### `${CLAUDE_PLUGIN_ROOT}`
-
-所有 command 通过 `${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py` 调脚本。Claude Code 在运行时把它改写成绝对路径，plugin 安装与 embed 嵌入两种模式都通。
-
 ## 兼容性
 
 | 依赖 | 版本 | 备注 |
@@ -102,8 +108,6 @@ filetree.py apply
 | `git` | 任意现代版本 | 运行期必须；非 git 仓库立刻报错 |
 | `python` | ≥ 3.9 | 用 PEP 585 `list[dict]` 内建泛型；纯 stdlib，零第三方包 |
 | Claude Code | 任意 | Plugin 形态。`claude` 已是原生二进制，不依赖 Node |
-
-Shebang 是 `#!/usr/bin/env python3`，但 commands 调用统一写裸 `python`，跨平台稳：Linux（`python` 多 alias 为 python3）、macOS（pyenv / brew 装的都行）、Windows（安装器默认只注册 `python.exe`）。
 
 ## 开发
 
