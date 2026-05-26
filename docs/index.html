@@ -1,0 +1,1570 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>filetree — One line per file. Hash-tracked.</title>
+  <meta name="description" content="A Claude Code plugin that maintains FILETREE.md — a one-line description per file with content hashes for staleness detection." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT@0,9..144,300..900,0..100;1,9..144,300..900,0..100&family=IBM+Plex+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    /* ── Reset ── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* ── Tokens ──
+       Paper-light manifest aesthetic. Background carries 60% of the surface
+       (Committed strategy). Ink is warm, never #000. Single signature color
+       (rust) lands on hash glyphs and primary CTAs.
+    */
+    :root {
+      --paper:        oklch(0.962 0.014 84);
+      --paper-panel:  oklch(0.938 0.018 82);
+      --paper-deep:   oklch(0.900 0.022 80);
+      --paper-edge:   oklch(0.982 0.010 88);
+
+      --ink-1:        oklch(0.220 0.022 60);
+      --ink-2:        oklch(0.420 0.020 65);
+      --ink-3:        oklch(0.580 0.020 70);
+      --ink-4:        oklch(0.700 0.018 75);
+
+      --rule-1:       oklch(0.860 0.022 75);
+      --rule-2:       oklch(0.780 0.024 75);
+      --rule-3:       oklch(0.680 0.026 70);
+
+      --mark:         oklch(0.475 0.175 32);
+      --mark-soft:    oklch(0.600 0.130 32);
+      --mark-pale:    oklch(0.880 0.060 38);
+      --mark-wash:    oklch(0.940 0.030 40);
+
+      --cool-quote:   oklch(0.430 0.060 220);
+
+      --font-display: 'Fraunces', 'Times New Roman', Georgia, serif;
+      --font-body:    'Fraunces', 'Times New Roman', Georgia, serif;
+      --font-mono:    'IBM Plex Mono', 'SF Mono', ui-monospace, monospace;
+
+      --space-1: 4px;
+      --space-2: 8px;
+      --space-3: 16px;
+      --space-4: 24px;
+      --space-5: 32px;
+      --space-6: 48px;
+      --space-7: 64px;
+      --space-8: 96px;
+      --space-9: 144px;
+
+      --rail-w: 56px;
+    }
+
+    html {
+      background: var(--paper);
+      color: var(--ink-1);
+      font-family: var(--font-body);
+      font-size: 17px;
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+      scroll-behavior: smooth;
+      font-variation-settings: "opsz" 14, "SOFT" 30;
+    }
+
+    body {
+      min-height: 100vh;
+      overflow-x: hidden;
+      background-image:
+        radial-gradient(ellipse 800px 400px at 50% -10%, oklch(0.90 0.030 50 / 0.35), transparent 70%),
+        radial-gradient(ellipse 600px 300px at 100% 50%, oklch(0.92 0.025 90 / 0.25), transparent 70%);
+      background-attachment: fixed;
+    }
+
+    a {
+      color: var(--ink-1);
+      text-decoration: none;
+      border-bottom: 1px solid var(--rule-2);
+      transition: color 0.18s ease, border-color 0.18s ease;
+    }
+    a:hover { color: var(--mark); border-color: var(--mark); }
+
+    :focus-visible {
+      outline: 2px solid var(--mark);
+      outline-offset: 3px;
+      border-radius: 1px;
+    }
+
+    code, .mono { font-family: var(--font-mono); font-size: 0.9em; }
+    em, i { font-style: italic; }
+
+    /* ── Layout shell ── */
+    .shell {
+      max-width: 1180px;
+      margin-inline: auto;
+      padding-inline: clamp(var(--space-4), 5vw, var(--space-7));
+    }
+
+    /* ── Nav ── */
+    nav.bar {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: oklch(0.962 0.014 84 / 0.82);
+      backdrop-filter: blur(8px) saturate(1.1);
+      -webkit-backdrop-filter: blur(8px) saturate(1.1);
+      border-bottom: 1px solid var(--rule-1);
+    }
+    nav.bar .inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-block: var(--space-3);
+    }
+    .brand {
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+      color: var(--ink-1);
+      border: none;
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-2);
+    }
+    .brand .glyph {
+      display: inline-block;
+      width: 14px; height: 14px;
+      background: var(--mark);
+      transform: rotate(45deg);
+    }
+    .brand .glyph::after {
+      content: '';
+      position: absolute;
+      width: 6px; height: 6px;
+      margin: 4px;
+      background: var(--paper);
+    }
+    .brand span.dot { color: var(--mark); }
+
+    nav .links {
+      display: flex;
+      gap: var(--space-5);
+      list-style: none;
+      align-items: center;
+    }
+    nav .links a {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      font-weight: 400;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--ink-2);
+      border-bottom: none;
+      padding-block: var(--space-2);
+    }
+    nav .links a:hover { color: var(--mark); }
+
+    /* ── Hero ── */
+    .hero {
+      padding-block: clamp(var(--space-7), 11vh, var(--space-9)) clamp(var(--space-6), 8vh, var(--space-8));
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+      gap: var(--space-7);
+      align-items: center;
+    }
+
+    .hero-text { max-width: 620px; }
+
+    .hero-eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      font-weight: 400;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--ink-3);
+      margin-bottom: var(--space-4);
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-3);
+    }
+    .hero-eyebrow::before {
+      content: '';
+      display: inline-block;
+      width: 28px; height: 1px;
+      background: var(--rule-3);
+    }
+
+    .hero-title {
+      font-family: var(--font-display);
+      font-size: clamp(4.2rem, 11vw, 8.4rem);
+      line-height: 0.86;
+      letter-spacing: -0.045em;
+      font-weight: 400;
+      font-style: italic;
+      font-variation-settings: "opsz" 144, "SOFT" 10;
+      color: var(--ink-1);
+      margin-bottom: var(--space-4);
+    }
+    .hero-title .dot {
+      color: var(--mark);
+      font-style: normal;
+      font-weight: 600;
+      display: inline-block;
+      transform: translateY(-0.04em);
+    }
+    .hero-title .roman {
+      font-style: normal;
+      font-weight: 300;
+      letter-spacing: -0.04em;
+    }
+
+    .hero-rule {
+      width: 96px;
+      height: 1px;
+      background: var(--ink-1);
+      margin: var(--space-4) 0 var(--space-5);
+    }
+
+    .hero-sub {
+      font-size: clamp(1.05rem, 1.35vw, 1.25rem);
+      line-height: 1.5;
+      color: var(--ink-2);
+      max-width: 50ch;
+      font-variation-settings: "opsz" 24, "SOFT" 30;
+    }
+    .hero-sub strong {
+      color: var(--ink-1);
+      font-weight: 600;
+    }
+
+    .hero-actions {
+      margin-top: var(--space-6);
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--space-3);
+      align-items: center;
+    }
+
+    /* Install: two independent copy buttons, one per slash command.
+       Each row copies only its own line — slash commands run separately
+       in Claude Code, so coupling them in one paste hurts more than helps. */
+    .install-group {
+      display: inline-flex;
+      flex-direction: column;
+      align-items: stretch;
+      background: var(--ink-1);
+      color: var(--paper);
+      padding: 4px;
+      border: none;
+      gap: 2px;
+    }
+
+    .install-row {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
+      padding: var(--space-3) var(--space-4);
+      background: transparent;
+      color: var(--paper);
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      font-weight: 500;
+      letter-spacing: 0.01em;
+      border: none;
+      border-radius: 0;
+      cursor: pointer;
+      min-height: 44px;
+      text-align: left;
+      white-space: nowrap;
+      transition: background 0.16s ease;
+      position: relative;
+    }
+    .install-row:hover {
+      background: oklch(0.30 0.025 60);
+    }
+    .install-row:active {
+      background: var(--mark);
+    }
+    .install-row + .install-row {
+      border-top: 1px dashed oklch(0.92 0.02 84 / 0.15);
+    }
+    .install-row .step {
+      color: var(--mark-pale);
+      font-size: 0.62rem;
+      font-weight: 400;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      min-width: 3ch;
+      user-select: none;
+    }
+    .install-row .cmd {
+      flex: 1;
+      color: var(--paper);
+    }
+    .install-row .cmd .prompt {
+      color: oklch(0.85 0.02 84 / 0.45);
+      user-select: none;
+    }
+    /* Hint: grid-stack a hidden placeholder of the longest state ("copied")
+       under the live label. Width always equals the longest possible state,
+       so the click swap can't reflow the block. Robust to font-size, font
+       fallback, and letter-spacing — no manual measurement. */
+    .install-row .hint {
+      display: inline-grid;
+      font-size: 0.62rem;
+      color: oklch(0.92 0.02 84 / 0.45);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      transition: color 0.16s ease;
+      text-align: right;
+      line-height: 1;
+    }
+    .install-row .hint::before {
+      content: 'copied';
+      grid-area: 1 / 1;
+      visibility: hidden;
+    }
+    .install-row .hint-label {
+      grid-area: 1 / 1;
+    }
+    .install-row:hover .hint { color: oklch(0.92 0.02 84 / 0.85); }
+    .install-row.copied .hint { color: var(--mark-pale); }
+
+    .ghost-link {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      letter-spacing: 0.03em;
+      color: var(--ink-2);
+      border-bottom: 1px solid var(--rule-2);
+      padding: var(--space-2) 0;
+    }
+    .ghost-link:hover { color: var(--mark); border-color: var(--mark); }
+
+    /* ── Hero manifest panel ── */
+    .manifest-card {
+      background: var(--paper-edge);
+      border: 1px solid var(--rule-2);
+      box-shadow:
+        0 1px 0 oklch(0.96 0.018 84) inset,
+        0 22px 60px -28px oklch(0.20 0.04 60 / 0.18),
+        0 4px 14px -10px oklch(0.20 0.04 60 / 0.18);
+      padding: var(--space-4) var(--space-5) var(--space-5);
+      position: relative;
+      transform: rotate(0.4deg);
+    }
+    .manifest-card::before {
+      content: '';
+      position: absolute;
+      top: -1px; right: -1px;
+      width: 28px; height: 28px;
+      background: linear-gradient(135deg, transparent 50%, var(--paper-panel) 50%);
+      border-left: 1px solid var(--rule-2);
+      border-bottom: 1px solid var(--rule-2);
+    }
+
+    .manifest-card-hd {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      padding-bottom: var(--space-3);
+      border-bottom: 1px solid var(--rule-1);
+      margin-bottom: var(--space-3);
+    }
+    .manifest-card-title {
+      font-family: var(--font-mono);
+      font-weight: 500;
+      font-size: 0.78rem;
+      color: var(--ink-1);
+      letter-spacing: 0.01em;
+    }
+    .manifest-card-title .ext { color: var(--mark); }
+    .manifest-card-stamp {
+      font-family: var(--font-mono);
+      font-size: 0.62rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--ink-3);
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .manifest-card-stamp::before {
+      content: '';
+      width: 6px; height: 6px;
+      background: var(--mark);
+      border-radius: 50%;
+      animation: pulse 2.2s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 0.45; transform: scale(0.9); }
+      50%      { opacity: 1;    transform: scale(1.15); }
+    }
+
+    .m-header {
+      font-family: var(--font-mono);
+      font-size: 0.84rem;
+      color: var(--ink-1);
+      margin-bottom: var(--space-2);
+    }
+    .m-header .hash { color: var(--ink-3); }
+    .m-byline {
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      color: var(--ink-3);
+      margin-bottom: var(--space-4);
+      font-style: italic;
+    }
+
+    .m-section {
+      font-family: var(--font-mono);
+      font-size: 0.74rem;
+      color: var(--ink-2);
+      margin-top: var(--space-4);
+      margin-bottom: var(--space-2);
+      font-weight: 500;
+    }
+    .m-section::before {
+      content: '## ';
+      color: var(--mark-soft);
+    }
+
+    .m-entries { list-style: none; }
+
+    .m-entry {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: var(--space-3);
+      align-items: baseline;
+      padding-block: 3px;
+      font-family: var(--font-mono);
+      font-size: 0.74rem;
+      line-height: 1.55;
+      transition: background-color 0.4s ease;
+      padding-inline: 4px;
+      margin-inline: -4px;
+    }
+    .m-entry.flash-stay { background-color: var(--mark-wash); }
+    .m-entry.flash-new  { background-color: oklch(0.92 0.04 130 / 0.6); }
+
+    .m-entry-body { color: var(--ink-2); }
+    .m-entry-body .name { color: var(--ink-1); font-weight: 500; }
+    .m-entry-body .name::before { content: '- `'; color: var(--ink-3); font-weight: 400; }
+    .m-entry-body .name::after  { content: '` '; color: var(--ink-3); font-weight: 400; }
+    .m-entry-body .em-dash { color: var(--ink-3); }
+
+    .m-entry-hash {
+      font-size: 0.68rem;
+      color: var(--mark);
+      letter-spacing: 0.02em;
+      transition: color 0.3s ease, transform 0.3s ease;
+      white-space: nowrap;
+    }
+    .m-entry-hash.updating {
+      color: var(--cool-quote);
+      animation: jitter 0.45s ease-in-out;
+    }
+    @keyframes jitter {
+      0%   { transform: translateY(0); }
+      25%  { transform: translateY(-1px); }
+      75%  { transform: translateY(1px); }
+      100% { transform: translateY(0); }
+    }
+
+    .m-foot {
+      margin-top: var(--space-4);
+      padding-top: var(--space-3);
+      border-top: 1px solid var(--rule-1);
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      color: var(--ink-3);
+      display: flex;
+      justify-content: space-between;
+      gap: var(--space-3);
+      letter-spacing: 0.04em;
+    }
+    .m-foot .signal {
+      color: var(--mark);
+      font-weight: 600;
+    }
+
+    /* ── Section base ── */
+    section {
+      padding-block: clamp(var(--space-7), 11vh, var(--space-9));
+      position: relative;
+    }
+    section + section { border-top: 1px solid var(--rule-1); }
+
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--mark);
+      margin-bottom: var(--space-4);
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-3);
+    }
+    .eyebrow .num {
+      color: var(--ink-3);
+      font-size: 0.68rem;
+    }
+    .eyebrow::before {
+      content: '';
+      width: 18px; height: 1px;
+      background: var(--mark);
+    }
+
+    .lead {
+      font-family: var(--font-display);
+      font-size: clamp(2.2rem, 5vw, 3.6rem);
+      line-height: 1.02;
+      letter-spacing: -0.035em;
+      font-weight: 400;
+      color: var(--ink-1);
+      max-width: 22ch;
+      font-variation-settings: "opsz" 96, "SOFT" 20;
+    }
+    .lead em { color: var(--mark); font-weight: 500; }
+
+    .lead + .lead-sub {
+      margin-top: var(--space-5);
+      max-width: 60ch;
+      font-size: 1.06rem;
+      line-height: 1.6;
+      color: var(--ink-2);
+    }
+
+    /* ── Pain section ── */
+    .pain-grid {
+      margin-top: var(--space-7);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 0;
+    }
+    .pain-row {
+      display: grid;
+      grid-template-columns: 80px minmax(0, 1.1fr) minmax(0, 1fr) 32px;
+      gap: var(--space-4);
+      align-items: start;
+      padding-block: var(--space-5);
+      border-bottom: 1px solid var(--rule-1);
+      opacity: 0;
+      transform: translateY(14px);
+      transition: opacity 0.6s cubic-bezier(0.2, 0.9, 0.3, 1), transform 0.6s cubic-bezier(0.2, 0.9, 0.3, 1);
+    }
+    .pain-row:first-child { border-top: 1px solid var(--rule-2); }
+    .pain-row.visible { opacity: 1; transform: translateY(0); }
+
+    .pain-num {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      letter-spacing: 0.04em;
+      color: var(--mark);
+      font-weight: 500;
+      padding-top: 4px;
+    }
+
+    .pain-q {
+      font-family: var(--font-display);
+      font-size: clamp(1.05rem, 1.6vw, 1.3rem);
+      line-height: 1.35;
+      color: var(--ink-2);
+      font-style: italic;
+      font-variation-settings: "opsz" 36, "SOFT" 50;
+    }
+
+    .pain-a {
+      font-family: var(--font-display);
+      font-size: clamp(1.05rem, 1.6vw, 1.3rem);
+      line-height: 1.35;
+      color: var(--ink-1);
+      font-weight: 500;
+    }
+    .pain-a code {
+      background: var(--mark-pale);
+      padding: 1px 6px;
+      color: var(--mark);
+      font-weight: 500;
+    }
+
+    .pain-mark {
+      font-family: var(--font-mono);
+      font-size: 1.3rem;
+      color: var(--mark);
+      font-weight: 300;
+      line-height: 1;
+      padding-top: 4px;
+      text-align: right;
+    }
+
+    /* ── UNCHANGED bias ── */
+    .bias {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+      gap: var(--space-7);
+      align-items: center;
+    }
+
+    .bias-explain {
+      max-width: 50ch;
+    }
+
+    .bias-pull {
+      font-family: var(--font-display);
+      font-size: clamp(2.4rem, 5vw, 3.6rem);
+      line-height: 1.02;
+      letter-spacing: -0.035em;
+      margin-top: var(--space-3);
+      font-variation-settings: "opsz" 96, "SOFT" 20;
+    }
+    .bias-pull strong {
+      font-weight: 600;
+      color: var(--mark);
+      font-style: italic;
+    }
+    .bias-pull .num {
+      font-weight: 500;
+      color: var(--ink-1);
+    }
+    .bias-pull .small {
+      font-size: 0.55em;
+      color: var(--ink-3);
+      letter-spacing: 0;
+      vertical-align: middle;
+    }
+
+    .bias-copy {
+      margin-top: var(--space-5);
+      font-size: 1.04rem;
+      line-height: 1.65;
+      color: var(--ink-2);
+    }
+    .bias-copy strong { color: var(--ink-1); font-weight: 600; }
+    .bias-copy code {
+      background: var(--paper-panel);
+      padding: 1px 6px;
+      color: var(--ink-1);
+    }
+
+    .bias-demo {
+      background: var(--paper-edge);
+      border: 1px solid var(--rule-2);
+      padding: var(--space-5);
+      position: relative;
+      box-shadow:
+        0 1px 0 oklch(0.96 0.018 84) inset,
+        0 24px 60px -32px oklch(0.20 0.04 60 / 0.16);
+    }
+    .bias-demo::before {
+      content: 'demo';
+      position: absolute;
+      top: -10px; left: var(--space-5);
+      background: var(--paper);
+      padding: 0 var(--space-3);
+      font-family: var(--font-mono);
+      font-size: 0.62rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--ink-3);
+    }
+
+    .bias-step {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      line-height: 1.7;
+      color: var(--ink-2);
+    }
+    .bias-step .label {
+      display: inline-block;
+      width: 4ch;
+      color: var(--ink-3);
+      user-select: none;
+    }
+    .bias-step .name { color: var(--ink-1); font-weight: 500; }
+    .bias-step .arrow { color: var(--mark); padding-inline: 6px; }
+    .bias-step .verdict {
+      background: var(--mark-pale);
+      color: var(--mark);
+      padding: 1px 6px;
+      font-weight: 600;
+    }
+    .bias-step .verdict.alt {
+      background: oklch(0.92 0.04 130 / 0.6);
+      color: oklch(0.40 0.12 140);
+    }
+    .bias-step .muted { color: var(--ink-3); }
+    .bias-step + .bias-step { margin-top: var(--space-2); }
+
+    .bias-divider {
+      margin-block: var(--space-4);
+      border-top: 1px dashed var(--rule-3);
+    }
+
+    .bias-cost {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--space-4);
+      margin-top: var(--space-4);
+    }
+    .bias-cost-cell {
+      padding: var(--space-3) 0;
+    }
+    .bias-cost-cell .k {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--ink-3);
+    }
+    .bias-cost-cell .v {
+      font-family: var(--font-display);
+      font-size: 1.7rem;
+      font-weight: 500;
+      color: var(--ink-1);
+      letter-spacing: -0.02em;
+      margin-top: 4px;
+      line-height: 1.1;
+    }
+    .bias-cost-cell.win .v { color: var(--mark); font-style: italic; }
+    .bias-cost-cell .note {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--ink-3);
+      margin-top: 4px;
+    }
+
+    /* ── Flow ── */
+    .flow {
+      margin-top: var(--space-7);
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 0;
+      position: relative;
+      counter-reset: flow;
+    }
+    .flow-step {
+      padding: var(--space-5) var(--space-4) var(--space-5) 0;
+      border-left: 1px solid var(--rule-2);
+      padding-left: var(--space-4);
+      position: relative;
+      opacity: 0;
+      transform: translateY(14px);
+      transition: opacity 0.6s ease-out, transform 0.6s ease-out;
+    }
+    .flow-step.visible { opacity: 1; transform: translateY(0); }
+    .flow-step:first-child { border-left: 1px solid var(--ink-1); }
+
+    .flow-step::before {
+      counter-increment: flow;
+      content: counter(flow, decimal-leading-zero);
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      font-weight: 500;
+      color: var(--mark);
+      letter-spacing: 0.06em;
+      display: block;
+      margin-bottom: var(--space-3);
+    }
+    .flow-name {
+      font-family: var(--font-display);
+      font-size: 1.25rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      color: var(--ink-1);
+      margin-bottom: var(--space-2);
+    }
+    .flow-name code {
+      font-family: var(--font-mono);
+      font-weight: 500;
+      font-size: 0.82rem;
+      background: var(--paper-panel);
+      padding: 1px 6px;
+      color: var(--mark);
+    }
+    .flow-desc {
+      font-family: var(--font-mono);
+      font-size: 0.74rem;
+      line-height: 1.55;
+      color: var(--ink-2);
+    }
+    .flow-desc .key { color: var(--ink-1); font-weight: 500; }
+
+    /* ── Commands ── */
+    .cmd-list {
+      margin-top: var(--space-7);
+      border-top: 1px solid var(--rule-2);
+    }
+    .cmd-row {
+      display: grid;
+      grid-template-columns: 220px minmax(0, 1.4fr) 96px;
+      gap: var(--space-5);
+      align-items: baseline;
+      padding-block: var(--space-5);
+      border-bottom: 1px solid var(--rule-1);
+      opacity: 0;
+      transform: translateY(12px);
+      transition: opacity 0.55s ease-out, transform 0.55s ease-out;
+    }
+    .cmd-row.visible { opacity: 1; transform: translateY(0); }
+
+    .cmd-name {
+      font-family: var(--font-mono);
+      font-size: 0.95rem;
+      color: var(--ink-1);
+      font-weight: 500;
+    }
+    .cmd-name .slash { color: var(--mark); }
+    .cmd-name .ns { color: var(--ink-3); }
+
+    .cmd-text {
+      font-family: var(--font-display);
+      font-size: 1.05rem;
+      line-height: 1.5;
+      color: var(--ink-2);
+      font-variation-settings: "opsz" 24, "SOFT" 40;
+    }
+    .cmd-text strong { color: var(--ink-1); font-weight: 600; }
+
+    .cmd-tag {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--ink-3);
+      text-align: right;
+      padding-top: 4px;
+    }
+    .cmd-tag.danger { color: var(--mark); }
+
+    /* ── Non-goals: refusal manifest ── */
+    .refusal {
+      margin-top: var(--space-7);
+    }
+    .refusal-head {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--ink-3);
+      margin-bottom: var(--space-5);
+      padding-bottom: var(--space-3);
+      border-bottom: 1px solid var(--rule-2);
+      display: flex;
+      justify-content: space-between;
+    }
+    .refusal-list { list-style: none; }
+    .refusal-item {
+      display: grid;
+      grid-template-columns: 64px minmax(0, 1fr) auto;
+      gap: var(--space-4);
+      align-items: baseline;
+      padding-block: var(--space-4);
+      border-bottom: 1px dashed var(--rule-2);
+      opacity: 0;
+      transform: translateX(-12px);
+      transition: opacity 0.45s ease-out, transform 0.45s ease-out;
+    }
+    .refusal-item.visible { opacity: 1; transform: translateX(0); }
+
+    .refusal-no {
+      font-family: var(--font-display);
+      font-style: italic;
+      font-weight: 500;
+      color: var(--mark);
+      font-size: 1.2rem;
+      letter-spacing: -0.02em;
+    }
+    .refusal-text {
+      font-family: var(--font-display);
+      font-size: clamp(1.15rem, 1.8vw, 1.5rem);
+      line-height: 1.3;
+      color: var(--ink-1);
+      letter-spacing: -0.012em;
+      font-weight: 400;
+      font-variation-settings: "opsz" 48, "SOFT" 25;
+    }
+    .refusal-text .strike {
+      text-decoration: line-through;
+      text-decoration-color: var(--mark);
+      text-decoration-thickness: 2px;
+      color: var(--ink-3);
+    }
+    .refusal-reason {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--ink-3);
+      letter-spacing: 0.04em;
+      max-width: 28ch;
+      text-align: right;
+      line-height: 1.5;
+    }
+
+    /* ── CTA ── */
+    section.cta {
+      padding-bottom: clamp(var(--space-8), 16vh, var(--space-9));
+    }
+    .cta-head {
+      font-family: var(--font-display);
+      font-size: clamp(2.8rem, 7vw, 5.2rem);
+      line-height: 0.96;
+      letter-spacing: -0.04em;
+      font-weight: 400;
+      font-style: italic;
+      font-variation-settings: "opsz" 144, "SOFT" 10;
+      max-width: 16ch;
+      color: var(--ink-1);
+    }
+    .cta-head .roman { font-style: normal; font-weight: 500; }
+    .cta-head .ink { color: var(--mark); }
+
+    .cta-detail {
+      margin-top: var(--space-5);
+      max-width: 50ch;
+      color: var(--ink-2);
+      font-size: 1.05rem;
+      line-height: 1.6;
+    }
+
+    .cta-actions {
+      margin-top: var(--space-6);
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--space-4) var(--space-5);
+      align-items: center;
+    }
+
+    .cta-steps {
+      margin-top: var(--space-6);
+      display: flex;
+      gap: var(--space-3);
+      align-items: stretch;
+      max-width: 760px;
+      flex-wrap: wrap;
+    }
+    .cta-step {
+      flex: 1 1 200px;
+      padding: var(--space-4);
+      background: var(--paper-edge);
+      border: 1px solid var(--rule-2);
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      color: var(--ink-2);
+      line-height: 1.55;
+    }
+    .cta-step .lbl {
+      font-size: 0.64rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--mark);
+      display: block;
+      margin-bottom: var(--space-2);
+      font-weight: 500;
+    }
+    .cta-step code {
+      color: var(--ink-1);
+      font-weight: 500;
+    }
+
+    /* ── Footer ── */
+    footer.bar {
+      border-top: 1px solid var(--rule-1);
+      padding-block: var(--space-5);
+    }
+    footer .inner {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--space-4);
+      justify-content: space-between;
+      align-items: center;
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.04em;
+      color: var(--ink-3);
+    }
+    footer .inner a {
+      color: var(--ink-2);
+      border-bottom: 1px solid var(--rule-2);
+    }
+    footer .inner a:hover { color: var(--mark); border-color: var(--mark); }
+    footer .sig { color: var(--ink-3); }
+    footer .sig .hash { color: var(--mark); }
+
+    /* ── Responsive ── */
+    @media (max-width: 960px) {
+      .hero {
+        grid-template-columns: minmax(0, 1fr);
+        gap: var(--space-6);
+        padding-block: var(--space-7) var(--space-6);
+      }
+      .manifest-card { transform: rotate(0); max-width: 100%; overflow: hidden; }
+      nav .links { gap: var(--space-4); }
+      .bias {
+        grid-template-columns: minmax(0, 1fr);
+        gap: var(--space-6);
+      }
+      .flow {
+        grid-template-columns: minmax(0, 1fr);
+      }
+      .flow-step { border-left: 1px solid var(--rule-2); }
+      .flow-step:first-child { border-left: 1px solid var(--ink-1); }
+      .cmd-row {
+        grid-template-columns: minmax(0, 1fr);
+        gap: var(--space-2);
+      }
+      .cmd-tag { text-align: left; padding-top: 0; }
+      .pain-row {
+        grid-template-columns: 48px minmax(0, 1fr) 24px;
+        row-gap: var(--space-2);
+      }
+      .pain-a { grid-column: 2 / 3; }
+      .refusal-item {
+        grid-template-columns: 40px minmax(0, 1fr);
+      }
+      .refusal-reason {
+        grid-column: 2 / 3;
+        text-align: left;
+        max-width: none;
+        padding-top: var(--space-2);
+      }
+      .hero-actions { width: 100%; }
+    }
+    @media (max-width: 560px) {
+      .hero-title { font-size: clamp(3.2rem, 16vw, 5.2rem); }
+      .bias-cost { grid-template-columns: 1fr; }
+
+      /* Mobile install: stack step+hint on top, full command on its own
+         line below — long slash commands need to wrap, not overflow. */
+      .install-group { width: 100%; max-width: 100%; }
+      .install-row {
+        flex-wrap: wrap;
+        padding: var(--space-3);
+        column-gap: var(--space-2);
+        row-gap: 4px;
+        font-size: 0.74rem;
+      }
+      .install-row .step { min-width: 0; }
+      .install-row .hint { margin-left: auto; min-width: 6ch; }
+      .install-row .cmd {
+        order: 3;
+        flex-basis: 100%;
+        white-space: normal;
+        word-break: break-word;
+        line-height: 1.4;
+      }
+
+      /* Nav: drop secondary anchors on narrow screens; keep brand + GitHub. */
+      nav .links { gap: var(--space-3); }
+      nav .links li:nth-child(1),
+      nav .links li:nth-child(2) { display: none; }
+      nav.bar .inner { padding-block: var(--space-2); }
+
+      .hero-actions { gap: var(--space-4); }
+    }
+
+    /* ── Reduced motion ── */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+      html { scroll-behavior: auto; }
+      .pain-row, .flow-step, .cmd-row, .refusal-item {
+        opacity: 1 !important;
+        transform: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ── Nav ── -->
+  <nav class="bar">
+    <div class="shell inner">
+      <a href="#" class="brand">
+        <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+          <rect x="0.5" y="0.5" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1"/>
+          <rect x="3" y="3" width="3" height="3" fill="var(--mark)"/>
+          <rect x="8" y="3" width="3" height="3" fill="currentColor" opacity="0.18"/>
+          <rect x="3" y="8" width="3" height="3" fill="currentColor" opacity="0.18"/>
+          <rect x="8" y="8" width="3" height="3" fill="var(--mark)"/>
+        </svg>
+        filetree<span class="dot">.</span>md
+      </a>
+      <ul class="links">
+        <li><a href="#how">How</a></li>
+        <li><a href="#commands">Commands</a></li>
+        <li><a href="#install">Install</a></li>
+        <li><a href="https://github.com/nekocode/filetree-skill">GitHub →</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <!-- ── Hero ── -->
+  <header class="shell hero">
+    <div class="hero-text">
+      <div class="hero-eyebrow">Claude Code plugin · v0.1</div>
+      <h1 class="hero-title">
+        <span>filetree</span><span class="dot">.</span>
+      </h1>
+      <div class="hero-rule"></div>
+      <p class="hero-sub">
+        A one-line description per file, with a content hash on every entry.
+        <strong>FILETREE.md</strong> lives in your repo, ships in your PRs, and
+        lets the LLM grasp the layout in a few hundred tokens — before it touches code.
+      </p>
+      <div class="hero-actions">
+        <div class="install-group" role="group" aria-label="Install commands">
+          <button class="install-row" type="button" data-copy="/plugin marketplace add nekocode/filetree-skill">
+            <span class="step">01</span>
+            <span class="cmd"><span class="prompt">/</span>plugin marketplace add nekocode/filetree-skill</span>
+            <span class="hint"><span class="hint-label" aria-live="polite">copy</span></span>
+          </button>
+          <button class="install-row" type="button" data-copy="/plugin install filetree">
+            <span class="step">02</span>
+            <span class="cmd"><span class="prompt">/</span>plugin install filetree</span>
+            <span class="hint"><span class="hint-label" aria-live="polite">copy</span></span>
+          </button>
+        </div>
+        <a class="ghost-link" href="https://github.com/nekocode/filetree-skill">View source</a>
+      </div>
+    </div>
+
+    <aside class="manifest-card" aria-hidden="true">
+      <div class="manifest-card-hd">
+        <div class="manifest-card-title">FILETREE<span class="ext">.md</span></div>
+        <div class="manifest-card-stamp">tracking</div>
+      </div>
+
+      <div class="m-header"># Project Filetree</div>
+      <div class="m-byline"><em>auto-maintained by /filetree:update</em></div>
+
+      <div class="m-section">src/auth/</div>
+      <ul class="m-entries" id="entriesA">
+        <li class="m-entry" data-key="middleware">
+          <span class="m-entry-body">
+            <span class="name">middleware.py</span><span class="em-dash">— </span>JWT validation; parses bearer, injects user_id into ctx
+          </span>
+          <span class="m-entry-hash" data-hash>a1b2c3d4</span>
+        </li>
+        <li class="m-entry" data-key="jwt">
+          <span class="m-entry-body">
+            <span class="name">jwt_utils.py</span><span class="em-dash">— </span>JWT sign / verify helpers, framework-agnostic
+          </span>
+          <span class="m-entry-hash" data-hash>e5f6g7h8</span>
+        </li>
+      </ul>
+
+      <div class="m-section">(root)/</div>
+      <ul class="m-entries" id="entriesB">
+        <li class="m-entry" data-key="readme">
+          <span class="m-entry-body">
+            <span class="name">README.md</span><span class="em-dash">— </span>Project entry doc
+          </span>
+          <span class="m-entry-hash" data-hash>9a8b7c6d</span>
+        </li>
+      </ul>
+
+      <div class="m-foot">
+        <span><span class="signal">●</span> live · drift watcher</span>
+        <span id="entryEvent">last: UNCHANGED · jwt_utils.py</span>
+      </div>
+    </aside>
+  </header>
+
+  <main>
+
+    <!-- ── Pain section ── -->
+    <section class="shell" id="why">
+      <div class="eyebrow"><span class="num">01</span> The waste</div>
+      <h2 class="lead">Every session, the same <em>archaeology</em>.</h2>
+      <p class="lead-sub">
+        Open Claude Code, get a new context window, watch the assistant <code>ls</code> · <code>grep</code> · <code>cat</code>
+        its way to a vague picture of your repo. Tomorrow it starts over. The dig is expensive, and the artifacts get thrown out.
+      </p>
+
+      <div class="pain-grid">
+        <div class="pain-row" data-reveal>
+          <div class="pain-num">01</div>
+          <div class="pain-q">LLM rediscovers your layout, session after session.</div>
+          <div class="pain-a">Persist it once as <code>FILETREE.md</code>. Commit to git. Share with collaborators.</div>
+          <div class="pain-mark">¶</div>
+        </div>
+        <div class="pain-row" data-reveal>
+          <div class="pain-num">02</div>
+          <div class="pain-q">Hand-written summary docs go stale silently.</div>
+          <div class="pain-a">Each entry carries an 8-char content hash. Mismatch <strong>is</strong> the drift signal.</div>
+          <div class="pain-mark">¶</div>
+        </div>
+        <div class="pain-row" data-reveal>
+          <div class="pain-num">03</div>
+          <div class="pain-q">Rewriting every description on small refactors wastes tokens.</div>
+          <div class="pain-a"><code>UNCHANGED</code> bias — purpose intact, only the hash refreshes. ~<strong>100×</strong> cheaper.</div>
+          <div class="pain-mark">¶</div>
+        </div>
+        <div class="pain-row" data-reveal>
+          <div class="pain-num">04</div>
+          <div class="pain-q">Other "code index" tools spin up sqlite, a daemon, a file watcher.</div>
+          <div class="pain-a">One markdown file. Change detection delegated to <strong>git</strong>. Zero background process.</div>
+          <div class="pain-mark">¶</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── UNCHANGED bias section ── -->
+    <section class="shell" id="how">
+      <div class="bias">
+        <div class="bias-explain">
+          <div class="eyebrow"><span class="num">02</span> Mechanism</div>
+          <h2 class="bias-pull">
+            <em>≈</em> <strong>80<span class="small">%</span></strong> of changed files emit one word: <em>UNCHANGED</em>.
+          </h2>
+          <p class="bias-copy">
+            A refactor doesn't change what a file <strong>does</strong>. Renaming a variable, adding tests, fixing a bug —
+            <strong>purpose stays intact</strong>. The LLM reads, judges, replies <code>UNCHANGED</code>. The script
+            refreshes the hash and keeps the old summary. <strong>The manifest itself is the cache</strong> — no SQLite, no daemon, no separate "I already saw this" memory.
+          </p>
+
+          <div class="bias-cost">
+            <div class="bias-cost-cell">
+              <div class="k">naive rewrite</div>
+              <div class="v">~120 tokens</div>
+              <div class="note">read · understand · summarize</div>
+            </div>
+            <div class="bias-cost-cell win">
+              <div class="k">unchanged path</div>
+              <div class="v">~4 bytes</div>
+              <div class="note">read · judge · <code>UNCHANGED</code></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="bias-demo" aria-hidden="true">
+          <div class="bias-step">
+            <span class="label">in</span><span class="name">jwt_utils.py</span><span class="muted"> · hash flipped</span>
+          </div>
+          <div class="bias-step">
+            <span class="label">llm</span>reads file<span class="arrow">→</span>compares to summary<span class="arrow">→</span>"<em>does this still describe it?</em>"
+          </div>
+          <div class="bias-step">
+            <span class="label">out</span><span class="verdict">UNCHANGED</span><span class="muted"> · 4 bytes</span>
+          </div>
+          <div class="bias-step">
+            <span class="label">apply</span>refresh hash<span class="arrow">→</span><span class="muted">summary preserved · diff stays clean</span>
+          </div>
+
+          <div class="bias-divider"></div>
+
+          <div class="bias-step">
+            <span class="label">in</span><span class="name">auth_router.py</span><span class="muted"> · purpose rewritten</span>
+          </div>
+          <div class="bias-step">
+            <span class="label">llm</span>reads file<span class="arrow">→</span>"<em>this is now an admin gateway</em>"
+          </div>
+          <div class="bias-step">
+            <span class="label">out</span><span class="verdict alt">new summary</span><span class="muted"> · ~120 tokens</span>
+          </div>
+          <div class="bias-step">
+            <span class="label">apply</span>overwrite entry<span class="arrow">→</span><span class="muted">manifest sees the new role</span>
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top: var(--space-8);">
+        <div class="eyebrow"><span class="num">03</span> Flow</div>
+        <h2 class="lead">A loop, not a build step.</h2>
+        <div class="flow">
+          <div class="flow-step" data-reveal>
+            <div class="flow-name"><code>todo</code></div>
+            <div class="flow-desc">
+              git <span class="key">ls-files</span> · hash-object · diff against manifest.<br>
+              Produces <span class="key">added / changed / removed / renamed</span>.
+            </div>
+          </div>
+          <div class="flow-step" data-reveal>
+            <div class="flow-name">LLM</div>
+            <div class="flow-desc">
+              Per <span class="key">added</span> file: write a one-line summary.<br>
+              Per <span class="key">changed</span>: <code>UNCHANGED</code> or a fresh line.
+            </div>
+          </div>
+          <div class="flow-step" data-reveal>
+            <div class="flow-name"><code>apply</code></div>
+            <div class="flow-desc">
+              Refresh hashes · overwrite changed entries · move renames · sort.<br>
+              Writes <span class="key">FILETREE.md</span>.
+            </div>
+          </div>
+          <div class="flow-step" data-reveal>
+            <div class="flow-name">You</div>
+            <div class="flow-desc">
+              Skim the diff. <span class="key">git add</span> · commit if it reads right.<br>
+              The tool never commits for you.
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Commands ── -->
+    <section class="shell" id="commands">
+      <div class="eyebrow"><span class="num">04</span> Surface</div>
+      <h2 class="lead">Three commands. Each <em>self-contained</em>.</h2>
+      <p class="lead-sub">
+        Namespaced slash commands, designed to be readable end-to-end from a single file.
+        No dispatch indirection, no hidden state, no <em>magic</em>.
+      </p>
+
+      <div class="cmd-list">
+        <div class="cmd-row" data-reveal>
+          <div class="cmd-name"><span class="slash">/</span>filetree<span class="ns">:</span>init</div>
+          <div class="cmd-text">
+            Generate <strong>FILETREE.md</strong> from scratch. Refuses to overwrite without confirmation.
+            Every tracked file becomes an entry.
+          </div>
+          <div class="cmd-tag">first run</div>
+        </div>
+        <div class="cmd-row" data-reveal>
+          <div class="cmd-name"><span class="slash">/</span>filetree<span class="ns">:</span>update</div>
+          <div class="cmd-text">
+            Sync the manifest with current repo state. Added · changed · removed · renamed —
+            <strong>handled in one pass</strong>. UNCHANGED bias keeps it cheap.
+          </div>
+          <div class="cmd-tag">daily</div>
+        </div>
+        <div class="cmd-row" data-reveal>
+          <div class="cmd-name"><span class="slash">/</span>filetree<span class="ns">:</span>lint</div>
+          <div class="cmd-text">
+            Read-only drift check. Exits non-zero if anything is stale. <strong>Does not call the LLM</strong> —
+            safe in CI, pre-commit hooks, anything tight.
+          </div>
+          <div class="cmd-tag danger">ci-friendly</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Non-goals: refusal manifest ── -->
+    <section class="shell">
+      <div class="refusal">
+        <div class="eyebrow"><span class="num">05</span> Restraint</div>
+        <h2 class="lead">What it <em>refuses</em> to do.</h2>
+        <p class="lead-sub">
+          Scope creep kills small tools. The non-goal list is part of the design.
+        </p>
+
+        <div class="refusal-head" style="margin-top: var(--space-7);">
+          <span>declined responsibilities</span>
+          <span>reason</span>
+        </div>
+        <ul class="refusal-list">
+          <li class="refusal-item" data-reveal>
+            <span class="refusal-no">no.</span>
+            <span class="refusal-text"><span class="strike">function- or class-level tracking</span></span>
+            <span class="refusal-reason">File-level is the resolution. grep covers the rest.</span>
+          </li>
+          <li class="refusal-item" data-reveal>
+            <span class="refusal-no">no.</span>
+            <span class="refusal-text"><span class="strike">semantic search / vector index</span></span>
+            <span class="refusal-reason">Not this tool's job. Use grep + the LLM.</span>
+          </li>
+          <li class="refusal-item" data-reveal>
+            <span class="refusal-no">no.</span>
+            <span class="refusal-text"><span class="strike">watcher · daemon · background process</span></span>
+            <span class="refusal-reason">Explicit slash command, at moments you choose.</span>
+          </li>
+          <li class="refusal-item" data-reveal>
+            <span class="refusal-no">no.</span>
+            <span class="refusal-text"><span class="strike">auto-commit</span></span>
+            <span class="refusal-reason">Review is the last quality gate. Stays with you.</span>
+          </li>
+          <li class="refusal-item" data-reveal>
+            <span class="refusal-no">no.</span>
+            <span class="refusal-text"><span class="strike">dependency / call-graph mapping</span></span>
+            <span class="refusal-reason">Manifest says <em>what</em>, not <em>who calls whom</em>.</span>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ── CTA ── -->
+    <section class="shell cta" id="install">
+      <div class="eyebrow"><span class="num">06</span> Install</div>
+      <h2 class="cta-head">
+        Stop digging.<br>
+        <span class="roman">Start <span class="ink"><em>reading</em>.</span></span>
+      </h2>
+      <p class="cta-detail">
+        Two lines in Claude Code and the plugin is live. Run <code>/filetree:init</code> once;
+        from then on it's <code>/filetree:update</code> when the layout shifts.
+      </p>
+
+      <div class="cta-actions">
+        <div class="install-group" role="group" aria-label="Install commands">
+          <button class="install-row" type="button" data-copy="/plugin marketplace add nekocode/filetree-skill">
+            <span class="step">01</span>
+            <span class="cmd"><span class="prompt">/</span>plugin marketplace add nekocode/filetree-skill</span>
+            <span class="hint"><span class="hint-label" aria-live="polite">copy</span></span>
+          </button>
+          <button class="install-row" type="button" data-copy="/plugin install filetree">
+            <span class="step">02</span>
+            <span class="cmd"><span class="prompt">/</span>plugin install filetree</span>
+            <span class="hint"><span class="hint-label" aria-live="polite">copy</span></span>
+          </button>
+        </div>
+      </div>
+
+      <div class="cta-steps">
+        <div class="cta-step">
+          <span class="lbl">step 01</span>
+          <code>/plugin marketplace add nekocode/filetree-skill</code>
+        </div>
+        <div class="cta-step">
+          <span class="lbl">step 02</span>
+          <code>/plugin install filetree</code>
+        </div>
+        <div class="cta-step">
+          <span class="lbl">step 03</span>
+          <code>/filetree:init</code> — let it map the repo, review the diff, commit.
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ── Footer ── -->
+  <footer class="bar">
+    <div class="shell inner">
+      <span class="sig">filetree · maintained by <a href="https://github.com/nekocode">nekocode</a> · MIT</span>
+      <span class="sig"><span class="hash">&lt;!--hash:a7c4e201--&gt;</span> Claude Code plugin</span>
+    </div>
+  </footer>
+
+  <script>
+    /* ── Scroll reveal — stagger siblings by index ── */
+    function initReveal() {
+      const items = document.querySelectorAll('[data-reveal]');
+      const observer = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          const parent = entry.target.parentElement;
+          const siblings = Array.from(parent.querySelectorAll('[data-reveal]'));
+          const idx = siblings.indexOf(entry.target);
+          setTimeout(() => entry.target.classList.add('visible'), idx * 90);
+          observer.unobserve(entry.target);
+        });
+      }, { threshold: 0.18, rootMargin: '0px 0px -40px 0px' });
+      items.forEach(i => observer.observe(i));
+    }
+
+    /* ── Manifest live demo ──
+       Cycles through UNCHANGED / new-summary states on the hero card.
+       Demonstrates the core mechanism without requiring user interaction.
+    */
+    function initManifestDemo() {
+      const card = document.querySelector('.manifest-card');
+      if (!card) return;
+
+      const events = [
+        {
+          key: 'middleware', kind: 'unchanged',
+          msg: 'changed: middleware.py → UNCHANGED'
+        },
+        {
+          key: 'jwt', kind: 'unchanged',
+          msg: 'changed: jwt_utils.py → UNCHANGED'
+        },
+        {
+          key: 'readme', kind: 'new',
+          msg: 'changed: README.md → fresh summary'
+        },
+        {
+          key: 'middleware', kind: 'unchanged',
+          msg: 'changed: middleware.py → UNCHANGED'
+        },
+        {
+          key: 'jwt', kind: 'new',
+          msg: 'changed: jwt_utils.py → fresh summary'
+        }
+      ];
+
+      const evtLine = document.getElementById('entryEvent');
+
+      function newHash() {
+        const chars = 'abcdef0123456789';
+        let out = '';
+        for (let i = 0; i < 8; i++) out += chars[Math.floor(Math.random() * 16)];
+        return out;
+      }
+
+      let idx = 0;
+      let isVisible = true;
+      let timer;
+
+      function tick() {
+        if (!isVisible) return;
+        const evt = events[idx % events.length];
+        const entry = card.querySelector(`.m-entry[data-key="${evt.key}"]`);
+        if (!entry) return;
+        const hashEl = entry.querySelector('.m-entry-hash');
+        const cls = evt.kind === 'unchanged' ? 'flash-stay' : 'flash-new';
+
+        /* hash flips on every change */
+        hashEl.classList.add('updating');
+        const next = newHash();
+        setTimeout(() => {
+          hashEl.textContent = next;
+          hashEl.classList.remove('updating');
+        }, 320);
+
+        /* row flashes to indicate the verdict */
+        entry.classList.add(cls);
+        setTimeout(() => entry.classList.remove(cls), 1400);
+
+        if (evtLine) evtLine.textContent = 'last: ' + evt.msg;
+
+        idx++;
+      }
+
+      /* Pause when offscreen — animation is decorative, not load-critical */
+      const obs = new IntersectionObserver(entries => {
+        isVisible = entries[0].isIntersecting;
+        if (isVisible && !timer) {
+          tick();
+          timer = setInterval(tick, 2600);
+        } else if (!isVisible && timer) {
+          clearInterval(timer);
+          timer = null;
+        }
+      }, { threshold: 0.1 });
+      obs.observe(card);
+    }
+
+    /* ── Copy install command ──
+       Each row copies its own slash command. Independent buttons match the
+       runtime: in Claude Code the two commands are two separate prompts. */
+    function initCopy() {
+      const rows = document.querySelectorAll('.install-row[data-copy]');
+      rows.forEach(row => {
+        const label = row.querySelector('.hint-label');
+        row.addEventListener('click', () => {
+          const text = row.getAttribute('data-copy');
+          navigator.clipboard.writeText(text).then(() => {
+            row.classList.add('copied');
+            if (label) label.textContent = 'copied';
+            setTimeout(() => {
+              row.classList.remove('copied');
+              if (label) label.textContent = 'copy';
+            }, 1800);
+          }).catch(() => {
+            if (label) label.textContent = 'failed';
+          });
+        });
+      });
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      initReveal();
+      initManifestDemo();
+      initCopy();
+    });
+  </script>
+</body>
+</html>
