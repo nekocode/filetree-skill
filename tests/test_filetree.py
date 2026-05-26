@@ -6,8 +6,8 @@ Coverage:
 """
 
 import json
-import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -127,18 +127,24 @@ class TestWriteManifest:
 
 @pytest.fixture
 def git_repo(tmp_path, monkeypatch):
-    """Empty git repo + chdir."""
+    """Empty git repo + chdir, fully isolated from host gitconfig.
+
+    Host ~/.gitconfig must not leak in: a developer who set
+    `core.quotePath=false` globally would otherwise see the new regression
+    test pass even after the fix is reverted.
+    """
     monkeypatch.chdir(tmp_path)
-    # Isolate user config so missing git config on CI/local does not break tests.
-    env = os.environ.copy()
-    env['GIT_AUTHOR_NAME'] = 'test'
-    env['GIT_AUTHOR_EMAIL'] = 'test@test'
-    env['GIT_COMMITTER_NAME'] = 'test'
-    env['GIT_COMMITTER_EMAIL'] = 'test@test'
-    for k, v in env.items():
-        monkeypatch.setenv(k, v)
+    monkeypatch.setenv('GIT_AUTHOR_NAME', 'test')
+    monkeypatch.setenv('GIT_AUTHOR_EMAIL', 'test@test')
+    monkeypatch.setenv('GIT_COMMITTER_NAME', 'test')
+    monkeypatch.setenv('GIT_COMMITTER_EMAIL', 'test@test')
+    # /dev/null sidesteps having to place a file (anywhere inside tmp_path leaks
+    # into the repo; anywhere outside leaks across tests). POSIX-only — fine here.
+    monkeypatch.setenv('GIT_CONFIG_GLOBAL', '/dev/null')
+    monkeypatch.setenv('GIT_CONFIG_SYSTEM', '/dev/null')
+    monkeypatch.delenv('GIT_CONFIG_COUNT', raising=False)
+    monkeypatch.delenv('XDG_CONFIG_HOME', raising=False)
     subprocess.run(['git', 'init', '-q'], check=True, cwd=tmp_path)
-    subprocess.run(['git', 'config', 'commit.gpgsign', 'false'], cwd=tmp_path)
     return tmp_path
 
 
@@ -246,12 +252,11 @@ class TestIntegration:
         manifest = filetree.parse_manifest()
         assert {e['path'] for e in manifest} == {'a.py'}
 
-    def test_lint_exit_codes(self, git_repo, capsys):
+    def test_lint_exit_codes(self, git_repo, capsys, monkeypatch):
         """lint exits 1 on drift and 0 when clean."""
         Path('a.py').write_text('x\n')
-        import sys as _sys
         # Drift present.
-        _sys.argv = ['filetree.py', 'lint']
+        monkeypatch.setattr(sys, 'argv', ['filetree.py', 'lint'])
         with pytest.raises(SystemExit) as ei:
             filetree.main()
         assert ei.value.code == 1
@@ -263,7 +268,7 @@ class TestIntegration:
                         'summary': 'x'}],
             'removals': [], 'renames': [],
         }))
-        _sys.argv = ['filetree.py', 'lint']
+        monkeypatch.setattr(sys, 'argv', ['filetree.py', 'lint'])
         # Even with no drift, sys.exit(0) still raises SystemExit.
         with pytest.raises(SystemExit) as ei2:
             filetree.main()
@@ -292,14 +297,13 @@ class TestIntegration:
         assert todo2['renamed'][0]['new_path'] == 'b.py'
 
         # Drive the main() apply branch via stdin.
-        import sys as _sys
         import io as _io
         payload = json.dumps({
             'updates': [], 'removals': [],
             'renames': [{'old_path': 'a.py', 'new_path': 'b.py'}],
         })
-        monkeypatch.setattr(_sys, 'stdin', _io.StringIO(payload))
-        _sys.argv = ['filetree.py', 'apply']
+        monkeypatch.setattr(sys, 'stdin', _io.StringIO(payload))
+        monkeypatch.setattr(sys, 'argv', ['filetree.py', 'apply'])
         filetree.main()
         out = capsys.readouterr().out
         assert '"total_entries": 1' in out
@@ -307,6 +311,80 @@ class TestIntegration:
         manifest = filetree.parse_manifest()
         assert manifest[0]['path'] == 'b.py'
         assert manifest[0]['summary'] == '原始文件'  # Summary carried over.
+
+
+    def test_non_ascii_paths_end_to_end(self, git_repo):
+        """Non-ASCII paths must survive ls-files / hash-object / status round-trip.
+
+        Covers both ls-files codepaths: `cn` is committed (tracked path),
+        `jp` is untracked (--others path).
+        """
+        Path('templates').mkdir()
+        cn = 'templates/光大信用卡-授权委托书模板.txt'
+        jp = 'templates/サンプル.txt'
+        Path(cn).write_text('cn content\n', encoding='utf-8')
+        Path(jp).write_text('jp content\n', encoding='utf-8')
+        subprocess.run(['git', 'add', cn], check=True)
+        subprocess.run(['git', 'commit', '-q', '-m', 'cn'], check=True)
+
+        todo = filetree.cmd_todo()
+        added_paths = {a['path'] for a in todo['added']}
+        assert cn in added_paths  # tracked, not yet in manifest
+        assert jp in added_paths  # untracked
+
+        # Round-trip through apply + re-read to catch any encoding loss.
+        filetree.cmd_apply(json.dumps({
+            'updates': [
+                {'path': a['path'], 'hash': a['hash'], 'summary': 'tpl'}
+                for a in todo['added']
+            ],
+            'removals': [], 'renames': [],
+        }, ensure_ascii=False))
+        manifest_paths = {e['path'] for e in filetree.parse_manifest()}
+        assert cn in manifest_paths
+        assert jp in manifest_paths
+
+    def test_non_ascii_rename_detected(self, git_repo):
+        """detect_renames must catch a staged rename of a non-ASCII path."""
+        old = '光大-v1.txt'
+        new = '光大-v2.txt'
+        Path(old).write_text('content\n', encoding='utf-8')
+        subprocess.run(['git', 'add', old], check=True)
+        subprocess.run(['git', 'commit', '-q', '-m', 'init'], check=True)
+
+        todo = filetree.cmd_todo()
+        h = todo['added'][0]['hash']
+        filetree.cmd_apply(json.dumps({
+            'updates': [{'path': old, 'hash': h, 'summary': '模板'}],
+            'removals': [], 'renames': [],
+        }, ensure_ascii=False))
+
+        subprocess.run(['git', 'mv', old, new], check=True)
+        todo2 = filetree.cmd_todo()
+        assert len(todo2['renamed']) == 1, todo2
+        assert todo2['renamed'][0]['old_path'] == old
+        assert todo2['renamed'][0]['new_path'] == new
+
+    def test_path_with_spaces_rename_detected(self, git_repo):
+        """Renames of paths with spaces must round-trip (the `-z` parser handles quoting)."""
+        old = 'old name.py'
+        new = 'new name.py'
+        Path(old).write_text('shared content here\n')
+        subprocess.run(['git', 'add', old], check=True)
+        subprocess.run(['git', 'commit', '-q', '-m', 'init'], check=True)
+
+        todo = filetree.cmd_todo()
+        h = todo['added'][0]['hash']
+        filetree.cmd_apply(json.dumps({
+            'updates': [{'path': old, 'hash': h, 'summary': 'orig'}],
+            'removals': [], 'renames': [],
+        }))
+
+        subprocess.run(['git', 'mv', old, new], check=True)
+        todo2 = filetree.cmd_todo()
+        assert len(todo2['renamed']) == 1, todo2
+        assert todo2['renamed'][0]['old_path'] == old
+        assert todo2['renamed'][0]['new_path'] == new
 
 
 class TestEdgeCases:
@@ -321,3 +399,75 @@ class TestEdgeCases:
             filetree.require_git()
         # Exit code is the error message string.
         assert 'git repository' in str(ei.value.code)
+
+    def test_unquote_git_path_legacy_octal(self):
+        """Legacy quoted-octal paths decode back to UTF-8."""
+        # Git's old quoting of 'templates/光.txt'.
+        quoted = '"templates/\\345\\205\\211.txt"'
+        assert filetree._unquote_git_path(quoted) == 'templates/光.txt'
+        # Raw paths pass through unchanged (idempotent).
+        assert filetree._unquote_git_path('templates/光.txt') == 'templates/光.txt'
+
+    def test_parse_manifest_migrates_legacy_octal(self, tmp_path, monkeypatch):
+        """A manifest produced by pre-fix code is silently upgraded on read."""
+        monkeypatch.chdir(tmp_path)
+        Path('FILETREE.md').write_text(
+            '# Project Filetree\n\n'
+            '## templates/\n\n'
+            '- `"\\345\\205\\211.txt"` — 模板 <!--hash:deadbeef-->\n',
+            encoding='utf-8',
+        )
+        entries = filetree.parse_manifest()
+        assert entries[0]['path'] == 'templates/光.txt'
+
+    def test_cmd_apply_rejects_hallucinated_path(self, git_repo):
+        """Updates referencing nonexistent files are skipped, not persisted."""
+        Path('real.py').write_text('x\n')
+        filetree.cmd_apply(json.dumps({
+            'updates': [
+                {'path': 'real.py', 'hash': '11111111', 'summary': 'real'},
+                {'path': 'ghost.py', 'hash': 'deadbeef', 'summary': 'hallucinated'},
+            ],
+            'removals': [], 'renames': [],
+        }))
+        manifest_paths = {e['path'] for e in filetree.parse_manifest()}
+        assert 'real.py' in manifest_paths
+        assert 'ghost.py' not in manifest_paths
+
+    def test_cmd_apply_unchanged_after_rename_does_not_persist_sentinel(self, git_repo):
+        """UNCHANGED for an already-renamed-away path must not write 'UNCHANGED' as summary."""
+        Path('a.py').write_text('x\n')
+        subprocess.run(['git', 'add', 'a.py'], check=True)
+        subprocess.run(['git', 'commit', '-q', '-m', 'init'], check=True)
+        todo = filetree.cmd_todo()
+        h_a = todo['added'][0]['hash']
+        filetree.cmd_apply(json.dumps({
+            'updates': [{'path': 'a.py', 'hash': h_a, 'summary': 'orig'}],
+            'removals': [], 'renames': [],
+        }))
+
+        subprocess.run(['git', 'mv', 'a.py', 'b.py'], check=True)
+        # Same call: rename a→b AND a stale UNCHANGED update referring to 'a.py'.
+        filetree.cmd_apply(json.dumps({
+            'updates': [{'path': 'a.py', 'hash': h_a, 'summary': 'UNCHANGED'}],
+            'removals': [], 'renames': [{'old_path': 'a.py', 'new_path': 'b.py'}],
+        }))
+        manifest = filetree.parse_manifest()
+        # b.py should carry the original summary; a.py must not exist as a ghost.
+        by_path = {e['path']: e for e in manifest}
+        assert 'a.py' not in by_path
+        assert by_path['b.py']['summary'] == 'orig'
+
+    def test_hash_files_handles_many_paths(self, git_repo):
+        """--stdin-paths bypasses ARG_MAX; verify a large batch hashes correctly."""
+        paths = []
+        for i in range(200):
+            p = f'f{i:04d}.txt'
+            Path(p).write_text(f'content {i}\n')
+            paths.append(p)
+        hashes = filetree.hash_files(paths)
+        assert len(hashes) == 200
+        # Each hash is 8 hex chars.
+        for h in hashes.values():
+            assert len(h) == 8
+            int(h, 16)  # Raises if not hex.

@@ -51,39 +51,98 @@ def should_skip(path: str) -> bool:
 
 def list_current_files() -> list[str]:
     """Tracked + untracked-unignored files, deduped and sorted."""
+    # -z: NUL-delimited records, no quoting ambiguity for paths with spaces/newlines/non-ASCII.
+    # core.quotePath=false: redundant under -z but kept as belt-and-braces and to match peer calls.
+    # encoding='utf-8': pin decoding so a C/POSIX locale doesn't crash on multi-byte paths.
     tracked = subprocess.check_output(
-        ['git', 'ls-files'], text=True,
-    ).splitlines()
+        ['git', '-c', 'core.quotePath=false', 'ls-files', '-z'],
+        encoding='utf-8',
+    ).split('\0')
     untracked = subprocess.check_output(
-        ['git', 'ls-files', '--others', '--exclude-standard'], text=True,
-    ).splitlines()
+        ['git', '-c', 'core.quotePath=false', 'ls-files', '--others', '--exclude-standard', '-z'],
+        encoding='utf-8',
+    ).split('\0')
     all_files = set(tracked) | set(untracked)
     return sorted(f for f in all_files if f and not should_skip(f))
 
 
 def hash_files(paths: list[str]) -> dict[str, str]:
-    """Batch `git hash-object`; returns {path: 8-char hash}."""
+    """Batch `git hash-object`; returns {path: 8-char hash}.
+
+    Uses --stdin-paths to sidestep ARG_MAX on large repos. Validates that git
+    returned one hash per input — defensive against partial-failure modes.
+    """
     if not paths:
         return {}
-    out = subprocess.check_output(
-        ['git', 'hash-object'] + paths, text=True,
-    ).strip().splitlines()
+    proc = subprocess.run(
+        ['git', 'hash-object', '--stdin-paths'],
+        input='\n'.join(paths),
+        capture_output=True, encoding='utf-8', check=True,
+    )
+    out = proc.stdout.strip().splitlines()
+    if len(out) != len(paths):
+        raise RuntimeError(
+            f'git hash-object: expected {len(paths)} hashes, got {len(out)}'
+        )
     return {p: h[:8] for p, h in zip(paths, out)}
 
 
 def detect_renames() -> list[tuple[str, str]]:
-    """Parse rename pairs from `git status`; trust git's default 50% similarity."""
+    """Parse staged rename pairs from `git status -z`. Trust git's default 50% similarity.
+
+    Limitation: a worktree-only `mv old new` (no `git add`) appears as delete + untracked.
+    Git cannot detect those as renames without staging, so neither can we.
+    """
     out = subprocess.check_output(
-        ['git', 'status', '--porcelain=v1'], text=True,
+        ['git', '-c', 'core.quotePath=false', 'status', '--porcelain=v1', '-z'],
+        encoding='utf-8',
     )
+    # porcelain v1 with -z: 'XY NEW\0OLD\0' for renames; 'XY PATH\0' otherwise.
+    fields = out.split('\0')
     renames = []
-    for line in out.splitlines():
-        if line[:2].strip().startswith('R'):
-            rest = line[3:]
-            if ' -> ' in rest:
-                old, new = rest.split(' -> ', 1)
-                renames.append((old.strip(), new.strip()))
+    i = 0
+    while i < len(fields):
+        entry = fields[i]
+        if len(entry) < 4:
+            i += 1
+            continue
+        xy = entry[:2]
+        new_path = entry[3:]
+        if xy[0] in ('R', 'C') and i + 1 < len(fields):
+            renames.append((fields[i + 1], new_path))
+            i += 2
+            continue
+        i += 1
     return renames
+
+
+def _unquote_git_path(s: str) -> str:
+    """Decode git's legacy C-style quoted-octal path. Idempotent on raw paths.
+
+    Migration hook: manifests produced before `core.quotePath=false` stored non-ASCII
+    paths as e.g. `"templates/\\345\\205\\211.txt"`. We decode them transparently so
+    upgrades don't see phantom remove+add churn.
+    """
+    if len(s) < 2 or s[0] != '"' or s[-1] != '"':
+        return s
+    inner = s[1:-1]
+    raw = bytearray()
+    i = 0
+    while i < len(inner):
+        c = inner[i]
+        if c == '\\' and i + 1 < len(inner):
+            nxt = inner[i + 1]
+            if nxt in '01234567' and i + 4 <= len(inner):
+                raw.append(int(inner[i + 1:i + 4], 8))
+                i += 4
+                continue
+            simple = {'n': 0x0A, 't': 0x09, 'r': 0x0D, '\\': 0x5C, '"': 0x22}
+            raw.append(simple.get(nxt, ord(nxt)))
+            i += 2
+        else:
+            raw.append(ord(c))
+            i += 1
+    return raw.decode('utf-8', errors='replace')
 
 
 def parse_manifest() -> list[dict]:
@@ -102,6 +161,7 @@ def parse_manifest() -> list[dict]:
         m = ENTRY_RE.match(line)
         if m:
             filename, summary, h = m.groups()
+            filename = _unquote_git_path(filename)
             # Backward-compat: legacy entries stored the full path.
             if '/' in filename:
                 full_path = filename
@@ -144,7 +204,10 @@ def write_manifest(entries: list[dict]) -> None:
             )
         lines.append('')
 
-    MANIFEST_PATH.write_text('\n'.join(lines), encoding='utf-8')
+    # Atomic write: tmp + os.replace, so a crash mid-write can't truncate the manifest.
+    tmp = MANIFEST_PATH.with_name(MANIFEST_PATH.name + '.tmp')
+    tmp.write_text('\n'.join(lines), encoding='utf-8')
+    tmp.replace(MANIFEST_PATH)
 
 
 def cmd_todo() -> dict:
@@ -199,13 +262,14 @@ def cmd_apply(updates_json: str) -> dict:
     """Apply LLM decisions to the manifest. UNCHANGED refreshes hash only."""
     require_git()
     updates = json.loads(updates_json)
+    current_paths = set(list_current_files())
     manifest = parse_manifest()
     by_path = {e['path']: e for e in manifest}
 
     # Rehash the new path: renames often carry small content edits.
     for r in updates.get('renames', []):
         old, new = r['old_path'], r['new_path']
-        if old in by_path:
+        if old in by_path and new in current_paths:
             entry = by_path.pop(old)
             entry['path'] = new
             entry['hash'] = hash_files([new]).get(new, entry['hash'])
@@ -218,9 +282,15 @@ def cmd_apply(updates_json: str) -> dict:
         p = u['path']
         h = u['hash']
         s = u['summary']
-        # UNCHANGED contract: refresh hash, keep old summary — linchpin of the cacheless design.
-        if s == 'UNCHANGED' and p in by_path:
-            by_path[p]['hash'] = h
+        # Reject hallucinated paths: LLMs sometimes emit entries for nonexistent files.
+        if p not in current_paths:
+            continue
+        if s == 'UNCHANGED':
+            # UNCHANGED contract: refresh hash, keep old summary — linchpin of the cacheless design.
+            # If path was popped by an earlier rename/removal in this same call, skip silently —
+            # never persist the literal sentinel string as a real summary.
+            if p in by_path:
+                by_path[p]['hash'] = h
         else:
             by_path[p] = {'path': p, 'hash': h, 'summary': s}
 
