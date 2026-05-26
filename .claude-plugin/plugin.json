@@ -1,0 +1,13 @@
+{
+  "name": "filetree",
+  "version": "0.1.0",
+  "description": "Maintain FILETREE.md — one-line description per file with content hashes for staleness detection.",
+  "author": {
+    "name": "nekocode",
+    "url": "https://github.com/nekocode"
+  },
+  "repository": "https://github.com/nekocode/filetree-skill",
+  "license": "MIT",
+  "commands": "./commands/",
+  "skills": "./skills/"
+}

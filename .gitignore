@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Test / coverage
+.coverage
+.coverage.*
+.pytest_cache/
+htmlcov/
+.tox/
+
+# Env
+.venv/
+venv/
+.env
+
+# Misc
+*.local.md
+/findings.md
+/progress.md
+/task_plan.md
+/.planning/
+ARCHITECTURE.md
+CLAUDE.md
+FILETREE.md

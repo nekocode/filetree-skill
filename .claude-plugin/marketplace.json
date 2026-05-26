@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "filetree",
+  "owner": {
+    "name": "nekocode",
+    "url": "https://github.com/nekocode"
+  },
+  "plugins": [
+    {
+      "name": "filetree",
+      "source": "./",
+      "description": "Maintain FILETREE.md — one-line description per file with content hashes for staleness detection.",
+      "version": "0.1.0"
+    }
+  ]
+}
