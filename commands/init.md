@@ -1,6 +1,6 @@
 ---
 description: Generate FILETREE.md from scratch. Confirms overwrite if it already exists.
-allowed-tools: Read, Edit, Write, Bash(python:*), Bash(grep:*), Task, AskUserQuestion
+allowed-tools: Read, Edit, Write, Bash(python:*), Task, AskUserQuestion
 ---
 
 Generate FILETREE.md from scratch for the current repository.
@@ -20,73 +20,72 @@ style, UNCHANGED bias (not used here, but good to internalize for future
    manifest captures the post-wire hash; otherwise the first `/filetree:lint`
    flags the wired file as drifted.
 
-   For each of `CLAUDE.md` and `AGENTS.md`:
+   First resolve the real targets — these files are often symlinks (e.g.
+   → `.ai/rules.md`), and editing the link path fails:
+   ```bash
+   python "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" wire-target
+   ```
+   For each of `CLAUDE.md` / `AGENTS.md` it returns `{exists, is_symlink,
+   real_path, matches}`. Then per file:
 
-   a. **Absent.** Skip — do not create.
-   b. **Already wired.** `grep -iE '(\./)?FILETREE\.md' <file>` (full file,
-      not a Read slice). Skip only if a match is a real reference — a
-      backticked path, link, or bullet. Bare prose, code-fence examples,
-      and negative warnings (`do not edit FILETREE.md`) do NOT count.
-   c. **Otherwise propose an edit.** Read the file in full. If a section's
-      existing bullets are `./*.md` paths (e.g. headings like `## References`,
-      `## 引用`, `## Documentation`, `## Project layout`), append a matching
-      bullet there. Else append a new short section at end. Match the file's
-      language and bullet style (including full-width `——` in zh files).
-      Wording must convey: read before `ls` / `grep` for the per-file
-      purpose index.
-   d. **Confirm via `AskUserQuestion`** before writing. Put the old → new
-      diff in the `question` body or a `preview` (option labels are too
-      short for a diff). On decline, skip — do not retry. Apply with `Edit`
-      on non-empty files; use `Write` on a zero-byte file (Edit cannot
-      anchor in empty content).
+   a. **`exists: false`** → skip; do not create.
+   b. **Already wired.** `matches` lists every line mentioning FILETREE.md.
+      Skip if one is a real reference — a backticked path, link, or bullet.
+      Bare prose and negative warnings (`do not edit FILETREE.md`) do NOT count.
+   c. **Otherwise propose an edit to `real_path`** (NEVER the link name — Edit
+      refuses to write through a symlink). Read `real_path` in full. If a section's
+      bullets are `./*.md` paths (`## References`, `## 引用`, `## Documentation`,
+      `## Project layout`), append a matching bullet there; else append a short
+      new section at end. Match the file's language and bullet style (full-width
+      `——` in zh files). Convey: read before `ls` / `grep` for the per-file index.
+   d. **Confirm via `AskUserQuestion`** before writing. Put the old → new diff in
+      the `question` body or a `preview`. On decline, skip — do not retry. `Edit`
+      `real_path` (use `Write` only on a zero-byte file).
 
    Record per-file outcome (wired / absent / already-wired / declined) now —
    sub-agents in step 4 can evict step-2 context. If step 3 or 5 later
    crashes, the wire bullet stays on disk; re-running `/filetree:init` is
-   idempotent (step 2.b will see the bullet and skip).
+   idempotent (step 2.b's `matches` will show the bullet and skip).
 
-3. **Generate work plan.** Pass `--batch-size 25` up front so a large repo comes
-   back pre-chunked — no second `todo` call to count or split:
+3. **Generate work plan.** One call; the script chunks and writes the work to
+   files (you never count or split):
    ```bash
-   python "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" todo --batch-size 25
+   python "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" todo --split
    ```
-   With no existing manifest, every tracked file lands in `added`. A wired
-   `CLAUDE.md` / `AGENTS.md` shows up with its post-wire hash. (A gitignored
-   one won't appear — wiring still works on disk, but the manifest only
-   tracks files git sees.)
+   With no existing manifest, every tracked file lands in `added` (split across
+   `batches`). A wired `CLAUDE.md` / `AGENTS.md` shows up with its post-wire hash.
+   (A gitignored one won't appear — wiring still works on disk, but the manifest
+   only tracks files git sees.)
 
-4. **Write summaries.** For each `added` entry: Read the file, write a one-line
-   summary per the SKILL.md style guide. Emit only `{path, summary}` — `apply`
-   computes hashes from disk, so you never join todo hashes onto summaries.
-   Items with a `symlink_target` field: do not Read — write `symlink → <target>`
-   (see SKILL.md Symlinks).
+4. **Write summaries.** Process the batches per SKILL.md "Processing the work
+   plan" (0 → skip to apply; 1 → inline; many → one `claude-haiku-4-5` sub-agent
+   per batch). For each item: Read the file, write a one-line summary per the
+   SKILL.md style guide. Items with a `symlink_target` field: do not Read — write
+   `symlink → <target>`.
 
    This is a from-scratch generation: there is no prior summary, so **every file
    needs a real summary**. `UNCHANGED` is never valid here — that sentinel belongs
    to `/filetree:update` and would be silently dropped by `apply` (init starts from
    an empty manifest, nothing to refresh).
 
-   When `need_llm > 25`, step 3's output carries a `batches` key. Parallelize per
-   the **Part-file protocol** in SKILL.md: `mktemp -d` once, one Task sub-agent
-   per batch, each given its batch's items **inline** and writing its own
-   `<parts_dir>/part_<i>.json`. Do NOT write batch files to disk or hand-roll a
-   coverage check — trust `missing_from_manifest`. Every sub-agent prompt MUST:
+   Every sub-agent prompt MUST:
    - Tell them to first `Read ${CLAUDE_PLUGIN_ROOT}/skills/filetree/SKILL.md` for the
-     summary **style** and the part-file shape — the "UNCHANGED bias" section there
-     is `/filetree:update` scoped and does NOT apply to init.
+     summary **style** and part-file shape, then Read their assigned `batch_NN.json`
+     and write `<split_dir>/part_NN.json` — the "UNCHANGED bias" section there is
+     `/filetree:update` scoped and does NOT apply to init.
    - State explicitly: **never output `UNCHANGED`. For every NON-symlink file write a
      real summary judged by its actual content** (including auto-generated files).
      For items with a `symlink_target` field, do NOT Read — write `symlink → <target>`.
 
-5. **Apply.** For the parallel path, point `apply` at the part files (the shell
-   expands the glob; the script merges them):
+5. **Apply** all parts in one call (shell expands the glob; the script merges and
+   computes hashes from disk):
    ```bash
-   python "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" apply <parts_dir>/part_*.json
+   python "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" apply <split_dir>/part_*.json
    ```
-   For a small repo done inline, pipe one payload via stdin instead:
-   ```json
-   {"updates": [{"path": "...", "summary": "..."}], "removals": [], "renames": []}
-   ```
+   Part files carry only `{"updates": [{"path", "summary"}]}`. For the inline
+   1-batch case you may instead pipe that one payload via stdin. (An empty repo
+   yields 0 batches — there are no part files to glob; pipe `{"updates": []}` via
+   stdin instead.)
 
 6. **Verify coverage, then report.** Inspect `apply`'s return: if
    `missing_from_manifest` is non-empty (a sub-agent dropped a file), or

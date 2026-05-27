@@ -484,40 +484,140 @@ class TestSymlinks:
 
 
 class TestBatches:
-    """`todo --batch-size N` pre-chunks LLM work so the main agent never
-    improvises batch splitting (re-running todo, writing batch_*.txt files)."""
+    """`todo --split` pre-chunks LLM work into batch files so the main agent never
+    improvises batch splitting (re-running todo, hand-counting, writing temp files)."""
 
     def _make_files(self, n):
         for i in range(n):
             Path(f'f{i:03d}.py').write_text(f'x = {i}\n')
 
-    def test_batches_chunk_and_cover_all_llm_work(self, git_repo):
+    def test_no_batches_without_split(self, git_repo):
+        """Plain todo (no split_dir) never emits batches — chunking is split-only."""
         self._make_files(7)
-        result = filetree.cmd_todo(batch_size=3)
-        assert 'batches' in result
-        sizes = [len(b) for b in result['batches']]
-        assert sizes == [3, 3, 1]
-        # Union of batches == every added+changed item, no dupes, no drops.
-        batched = [item['path'] for b in result['batches'] for item in b]
-        assert sorted(batched) == sorted(a['path'] for a in result['added'])
-
-    def test_no_batches_when_at_or_below_size(self, git_repo):
-        self._make_files(3)
+        assert 'batches' not in filetree.cmd_todo()
         assert 'batches' not in filetree.cmd_todo(batch_size=3)
-
-    def test_no_batches_when_disabled(self, git_repo):
-        self._make_files(7)
-        assert 'batches' not in filetree.cmd_todo()  # default batch_size=0
-
-    def test_main_todo_batch_size_emits_batches(self, git_repo, capsys, monkeypatch):
-        self._make_files(5)
-        monkeypatch.setattr(sys, 'argv', ['filetree.py', 'todo', '--batch-size', '2'])
-        filetree.main()
-        out = json.loads(capsys.readouterr().out)
-        assert [len(b) for b in out['batches']] == [2, 2, 1]
 
     def test_main_lint_rejects_batch_size(self, git_repo, monkeypatch):
         monkeypatch.setattr(sys, 'argv', ['filetree.py', 'lint', '--batch-size', '5'])
+        with pytest.raises(SystemExit) as ei:
+            filetree.main()
+        assert ei.value.code != 0
+
+    def test_main_todo_batch_size_requires_split(self, git_repo, monkeypatch):
+        """--batch-size alone is a silent no-op, so it's rejected without --split."""
+        self._make_files(3)
+        monkeypatch.setattr(sys, 'argv', ['filetree.py', 'todo', '--batch-size', '2'])
+        with pytest.raises(SystemExit) as ei:
+            filetree.main()
+        assert ei.value.code != 0
+
+    def test_split_writes_batch_files_and_trims_stdout(self, git_repo, tmp_path_factory):
+        """split_dir mode writes batch_NN.json and returns refs, not the full lists."""
+        self._make_files(5)
+        out_dir = tmp_path_factory.mktemp('split')
+        result = filetree.cmd_todo(batch_size=2, split_dir=str(out_dir))
+        # Batch files on disk, each a JSON array of items, sizes 2/2/1.
+        files = sorted(out_dir.glob('batch_*.json'))
+        assert [p.name for p in files] == ['batch_00.json', 'batch_01.json', 'batch_02.json']
+        assert [len(json.loads(p.read_text())) for p in files] == [2, 2, 1]
+        # Returned refs match the files; union covers every added item.
+        assert result['split_dir'] == str(out_dir)
+        assert [b['count'] for b in result['batches']] == [2, 2, 1]
+        batched = [it['path'] for p in files for it in json.loads(p.read_text())]
+        assert sorted(batched) == sorted(a['path'] for a in result['added'])
+
+    def test_main_split_drops_full_lists_from_stdout(self, git_repo, capsys, monkeypatch):
+        """The `todo --split` CLI keeps stdout small (no added/changed dumps)."""
+        self._make_files(3)
+        monkeypatch.setattr(sys, 'argv', ['filetree.py', 'todo', '--split', '--batch-size', '2'])
+        filetree.main()
+        out = json.loads(capsys.readouterr().out)
+        assert 'added' not in out and 'changed' not in out
+        assert 'split_dir' in out
+        assert [b['count'] for b in out['batches']] == [2, 1]
+        # The referenced files really exist and cover the work.
+        assert all(Path(b['file']).exists() for b in out['batches'])
+
+    def test_split_empty_when_nothing_to_do(self, git_repo, tmp_path_factory):
+        """No LLM work → no batch files, empty batches list."""
+        out_dir = tmp_path_factory.mktemp('split_empty')
+        result = filetree.cmd_todo(split_dir=str(out_dir))
+        assert result['batches'] == []
+        assert list(out_dir.glob('batch_*.json')) == []
+
+
+class TestApplyRecomputesEdits:
+    """apply derives removed/renamed from repo state; the payload carries only updates."""
+
+    def test_apply_recomputes_removal_without_payload(self, git_repo):
+        """A deleted file is dropped from the manifest even when the payload omits it."""
+        Path('a.py').write_text('x\n')
+        Path('b.py').write_text('y\n')
+        todo = filetree.cmd_todo()
+        filetree.cmd_apply(json.dumps({'updates': [
+            {'path': a['path'], 'summary': a['path']} for a in todo['added']
+        ]}))
+
+        Path('b.py').unlink()
+        # Payload has NO removals key — apply must still drop b.py.
+        result = filetree.cmd_apply(json.dumps({'updates': []}))
+        assert {e['path'] for e in filetree.parse_manifest()} == {'a.py'}
+        assert result['removed'] == 1
+
+    def test_apply_recomputes_rename_without_payload(self, git_repo):
+        """A staged rename carries the summary over with no rename info in the payload."""
+        Path('a.py').write_text('shared content here\n')
+        subprocess.run(['git', 'add', 'a.py'], check=True)
+        subprocess.run(['git', 'commit', '-q', '-m', 'init'], check=True)
+        todo = filetree.cmd_todo()
+        filetree.cmd_apply(json.dumps({'updates': [
+            {'path': 'a.py', 'summary': '原始文件'}
+        ]}))
+
+        subprocess.run(['git', 'mv', 'a.py', 'b.py'], check=True)
+        result = filetree.cmd_apply(json.dumps({'updates': []}))  # no renames key
+        by_path = {e['path']: e for e in filetree.parse_manifest()}
+        assert 'a.py' not in by_path
+        assert by_path['b.py']['summary'] == '原始文件'
+        assert result['renamed'] == 1
+
+
+class TestWireTarget:
+    """wire-target resolves the real edit path so the agent never writes through a symlink."""
+
+    def test_resolves_symlink_to_real_path(self, git_repo):
+        Path('.ai').mkdir()
+        Path('.ai/rules.md').write_text('# rules\n\n## References\n', encoding='utf-8')
+        os.symlink('.ai/rules.md', 'CLAUDE.md')
+
+        out = filetree.cmd_wire_target()
+        assert out['CLAUDE.md']['exists'] is True
+        assert out['CLAUDE.md']['is_symlink'] is True
+        assert out['CLAUDE.md']['real_path'] == os.path.realpath('.ai/rules.md')
+        assert out['AGENTS.md'] == {'exists': False}
+
+    def test_reports_existing_filetree_reference(self, git_repo):
+        Path('CLAUDE.md').write_text(
+            '# Rules\n\n## References\n\n- `./FILETREE.md` — index\n', encoding='utf-8')
+        out = filetree.cmd_wire_target()
+        assert out['CLAUDE.md']['is_symlink'] is False
+        assert any('FILETREE.md' in m for m in out['CLAUDE.md']['matches'])
+
+    def test_plain_file_no_reference(self, git_repo):
+        Path('AGENTS.md').write_text('# Agents\n\njust prose\n', encoding='utf-8')
+        out = filetree.cmd_wire_target()
+        assert out['AGENTS.md']['exists'] is True
+        assert out['AGENTS.md']['matches'] == []
+
+    def test_main_wire_target_emits_json(self, git_repo, capsys, monkeypatch):
+        Path('CLAUDE.md').write_text('# x\n', encoding='utf-8')
+        monkeypatch.setattr(sys, 'argv', ['filetree.py', 'wire-target'])
+        filetree.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out['CLAUDE.md']['exists'] is True
+
+    def test_main_wire_target_rejects_stray_args(self, git_repo, monkeypatch):
+        monkeypatch.setattr(sys, 'argv', ['filetree.py', 'wire-target', 'extra.json'])
         with pytest.raises(SystemExit) as ei:
             filetree.main()
         assert ei.value.code != 0
@@ -676,15 +776,15 @@ class TestEdgeCases:
         assert 'missing_from_manifest' not in result
 
     def test_merge_payloads_concatenates(self):
-        """merge_payloads joins updates/removals/renames across part files."""
+        """merge_payloads joins `updates` across part files; ignores stray keys."""
         merged = filetree.merge_payloads([
-            {'updates': [{'path': 'a', 'summary': 'a'}], 'removals': ['x'], 'renames': []},
-            {'updates': [{'path': 'b', 'summary': 'b'}], 'removals': [], 'renames': [{'old_path': 'o', 'new_path': 'n'}]},
+            {'updates': [{'path': 'a', 'summary': 'a'}], 'removals': ['x']},  # stray key tolerated
+            {'updates': [{'path': 'b', 'summary': 'b'}]},
             {},  # tolerate a part with missing keys
         ])
         assert [u['path'] for u in merged['updates']] == ['a', 'b']
-        assert merged['removals'] == ['x']
-        assert merged['renames'] == [{'old_path': 'o', 'new_path': 'n'}]
+        # Removals/renames are no longer a part-file concern — apply recomputes them.
+        assert set(merged) == {'updates'}
 
     def test_merge_payloads_dedups_updates_last_wins(self):
         """Same path across parts collapses to one entry, last writer wins."""

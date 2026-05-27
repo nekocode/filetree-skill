@@ -12,55 +12,44 @@ Internalize the summary style too, in case any items go to `added`.
 
 ## Steps
 
-1. **Generate work plan.** Pass `--batch-size 25` up front so a large run comes
-   back pre-chunked — no second `todo` call to count or split:
+1. **Generate work plan.** One call; the script chunks and writes the work to
+   files (you never count or split):
    ```bash
-   python "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" todo --batch-size 25
+   python "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" todo --split
    ```
    If `FILETREE.md` doesn't exist, tell the user to run `/filetree:init` first
-   and stop.
+   and stop. Otherwise the output gives `split_dir` + `batches` (see SKILL.md
+   "Processing the work plan").
 
-2. **Process the work plan.**
-   - `added`: Read file, write fresh summary (style guide in SKILL.md)
-   - `changed`: **prefer `git diff HEAD -- <path>` over Read** — diff is usually
-     10–100× smaller than the full file and shows exactly what changed, which is
-     all UNCHANGED decisions need. Only fall back to Read if diff is empty or
-     misleading (e.g., the file was never committed, so diff shows the whole file
-     anyway).
-   - `removed`, `renamed`: nothing for you to do; the script handles them in apply
+2. **Process the batches** per SKILL.md (0 → skip to apply; 1 → inline; many →
+   one `claude-haiku-4-5` sub-agent per batch). Each batch item is decided thus:
+   - `added` (no `old_summary`): Read file, write fresh summary.
+   - `changed` (has `old_summary`): **prefer `git diff HEAD -- <path>` over Read**
+     — diff is 10–100× smaller and shows exactly what changed, all an UNCHANGED
+     decision needs. Most changes → `"UNCHANGED"` (see UNCHANGED bias).
+   - `symlink_target` present: do NOT Read — write `symlink → <target>`.
 
-   If you already edited the file in this session, you may decide UNCHANGED from
-   your own working memory without re-reading. Items with a `symlink_target`
-   field: do not Read — write `symlink → <target>` (see SKILL.md Symlinks).
+   You don't handle removed/renamed — `apply` recomputes them from repo state.
+   Each sub-agent prompt MUST tell them to first
+   `Read ${CLAUDE_PLUGIN_ROOT}/skills/filetree/SKILL.md` (summary style, UNCHANGED
+   bias, part-file shape), then Read their assigned `batch_NN.json`, then write
+   `<split_dir>/part_NN.json`.
 
-   When `need_llm > 25`, step 1's output carries a `batches` key. Parallelize per
-   the **Part-file protocol** in SKILL.md: `mktemp -d` once, one Task sub-agent
-   per batch, each given its batch's items **inline** and writing its own
-   `<parts_dir>/part_<i>.json`. Each sub-agent prompt MUST instruct them to first
-   `Read ${CLAUDE_PLUGIN_ROOT}/skills/filetree/SKILL.md` for the summary style,
-   UNCHANGED bias, and part-file shape before processing their batch. Do NOT
-   write batch files to disk or hand-roll a coverage check — trust
-   `missing_from_manifest`.
-
-3. **Apply.** For the parallel path, point `apply` at the part files (the shell
-   expands the glob; the script merges them):
+3. **Apply** all parts in one call (shell expands the glob; the script merges,
+   computes hashes from disk, and syncs removed/renamed itself):
    ```bash
-   python "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" apply <parts_dir>/part_*.json
+   python "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" apply <split_dir>/part_*.json
    ```
-   For a small set done inline, pipe one payload via stdin instead. Emit only
-   `{path, summary}` — `apply` computes hashes from disk:
-   ```json
-   {
-     "updates": [{"path": "...", "summary": "..." | "UNCHANGED"}],
-     "removals": ["path1", "path2"],
-     "renames": [{"old_path": "...", "new_path": "..."}]
-   }
-   ```
+   Part files carry only `{"updates": [{"path", "summary"}]}`. For the inline
+   1-batch case you may instead pipe that one payload via stdin. For **0 batches**
+   (deletion/rename-only drift) there are no part files to glob — pipe an empty
+   payload so apply still runs: `echo '{"updates": []}' | python ... apply`.
 
 4. **Verify coverage, then report.** If `apply` returns `missing_from_manifest`
-   (a dropped sub-agent output) or `skipped_*`, summarize those and re-run
-   `apply` (it merges) until clean. Then report: added N, removed M, renamed R,
-   summaries updated S, hashes refreshed (UNCHANGED) U.
+   or `skipped_*`, summarize those into one more part and re-run `apply` (it
+   merges) until clean. The result's `removed` / `renamed` counts are
+   authoritative. Then report: added N, removed M, renamed R, summaries updated
+   S, hashes refreshed (UNCHANGED) U.
 
 ## Do not
 

@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 MANIFEST_PATH = Path('FILETREE.md')
@@ -156,6 +157,19 @@ def detect_renames() -> list[tuple[str, str]]:
     return renames
 
 
+def compute_renames(manifest_by_path: dict) -> list[dict]:
+    """Rename pairs git detected, kept to manifest-known sources and indexable targets.
+
+    Deterministic from repo state, so both `cmd_todo` and `cmd_apply` derive renames
+    here rather than trusting an LLM-relayed payload — the agent never hand-carries them.
+    """
+    return [
+        {'old_path': o, 'new_path': n}
+        for o, n in detect_renames()
+        if o in manifest_by_path and not should_skip(n)
+    ]
+
+
 def _unquote_git_path(s: str) -> str:
     """Decode git's legacy C-style quoted-octal path. Idempotent on raw paths.
 
@@ -250,25 +264,25 @@ def write_manifest(entries: list[dict]) -> None:
     tmp.replace(MANIFEST_PATH)
 
 
-def cmd_todo(batch_size: int = 0) -> dict:
+DEFAULT_BATCH_SIZE = 25
+
+
+def cmd_todo(batch_size: int = 0, split_dir: str = None) -> dict:
     """Diff current files vs manifest; emit the LLM todo list.
 
-    `batch_size > 0` and `need_llm > batch_size` adds a `batches` key: the LLM
-    work (added + changed items) pre-chunked into lists of `batch_size`. The main
-    agent hands one batch inline to each parallel sub-agent — no re-running todo,
-    no materializing batch files on disk.
+    With `split_dir` set, the LLM work (added + changed) is chunked into
+    `<split_dir>/batch_<NN>.json` files of `batch_size` items each, and the result
+    carries `split_dir` + `batches` as `[{file, count}]`. The caller drops the full
+    added/changed lists from stdout (they live in the files now), so a large repo
+    can't blow past a read limit and force re-parsing. Without `split_dir` the result
+    is the plain diff — the agent never improvises chunking or temp files.
     """
     require_git()
     current_paths = set(list_current_files())
     manifest = parse_manifest()
     manifest_by_path = {e['path']: e for e in manifest}
 
-    renames_raw = detect_renames()
-    renames = [
-        {'old_path': o, 'new_path': n}
-        for o, n in renames_raw
-        if o in manifest_by_path and not should_skip(n)
-    ]
+    renames = compute_renames(manifest_by_path)
     renamed_olds = {r['old_path'] for r in renames}
     renamed_news = {r['new_path'] for r in renames}
 
@@ -312,63 +326,68 @@ def cmd_todo(batch_size: int = 0) -> dict:
         },
     }
 
-    if batch_size and result['stats']['need_llm'] > batch_size:
+    if split_dir is not None:
+        size = batch_size or DEFAULT_BATCH_SIZE
         items = added + changed
-        result['batches'] = [
-            items[i:i + batch_size] for i in range(0, len(items), batch_size)
-        ]
+        out_dir = Path(split_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        batch_refs = []
+        for i in range(0, len(items), size):
+            chunk = items[i:i + size]
+            f = out_dir / f'batch_{i // size:02d}.json'
+            f.write_text(json.dumps(chunk, ensure_ascii=False, indent=2), encoding='utf-8')
+            batch_refs.append({'file': str(f), 'count': len(chunk)})
+        result['split_dir'] = str(out_dir)
+        result['batches'] = batch_refs
     return result
 
 
 def merge_payloads(payloads: list[dict]) -> dict:
-    """Concatenate updates / removals / renames from several decision JSONs.
+    """Merge `updates` across part files; dedup per path, last writer wins.
 
-    Each parallel sub-agent writes its own part file; the script joins them so the
-    main agent never hand-merges.
-
-    `updates` are deduped per path, last writer wins — overlapping batches or a
-    retry part re-listing a file (the glob re-matches old + new parts) must not
-    leave two entries for one path, which would inflate received/applied and
-    raise a false `skipped_unchanged_new` for a path that actually landed.
+    Each parallel sub-agent writes its own part file with only `{path, summary}`
+    entries — removals/renames are not a part-file concern (apply recomputes them
+    from repo state). Dedup matters because a retry part or overlapping batches can
+    re-list a path (the apply glob re-matches old + new parts); two entries for one
+    path would inflate received/applied and raise a false `skipped_unchanged_new`.
     """
-    merged = {'updates': [], 'removals': [], 'renames': []}
     updates_by_path = {}  # path -> entry, preserving last occurrence
     for p in payloads:
         for u in p.get('updates', []):
             updates_by_path[u['path']] = u
-        merged['removals'].extend(p.get('removals', []))
-        merged['renames'].extend(p.get('renames', []))
-    merged['updates'] = list(updates_by_path.values())
-    return merged
+    return {'updates': list(updates_by_path.values())}
 
 
 def cmd_apply(updates_json: str) -> dict:
-    """Apply LLM decisions to the manifest. UNCHANGED refreshes hash only.
+    """Apply LLM summaries to the manifest. UNCHANGED refreshes hash only.
 
-    Hashes are computed from disk here, not taken from the payload: sub-agents emit
-    only {path, summary}, so the main agent never joins todo hashes onto summaries
-    (that manual join was the dominant source of dropped files). A payload `hash`,
-    if present, is ignored.
+    The payload carries only `{updates: [{path, summary}]}`:
+    - Hashes are computed from disk, never taken from the payload (the old manual
+      hash-join was the dominant source of dropped files).
+    - Removals and renames are recomputed from repo state here, not relayed by the
+      agent — they're deterministic, so carrying them through the LLM was pure churn.
     """
     require_git()
-    updates = json.loads(updates_json)
+    updates = json.loads(updates_json).get('updates', [])
     current_paths = set(list_current_files())
     manifest = parse_manifest()
     by_path = {e['path']: e for e in manifest}
 
-    # Old paths intentionally retired in this call. A stale `updates` entry for one
-    # of these is expected (the LLM redundantly re-listed a renamed/removed file) —
-    # it must NOT be reported as a missing-path anomaly.
-    retired_paths = {r['old_path'] for r in updates.get('renames', [])}
-    retired_paths.update(updates.get('removals', []))
+    # Recompute the deterministic edits from repo state.
+    renames = compute_renames(by_path)
+    renamed_olds = {r['old_path'] for r in renames}
+    removed = sorted(set(by_path) - current_paths - renamed_olds)
+    # Old paths retired in this call. A stale `updates` entry for one of these is
+    # expected (LLM re-listed a renamed/removed file) — not a missing-path anomaly.
+    retired_paths = renamed_olds | set(removed)
 
     # Single batched hash pass over every path we will touch that still exists on disk.
-    to_hash = {u['path'] for u in updates.get('updates', [])}
-    to_hash.update(r['new_path'] for r in updates.get('renames', []))
+    to_hash = {u['path'] for u in updates}
+    to_hash.update(r['new_path'] for r in renames)
     disk_hashes = hash_files(sorted(p for p in to_hash if p in current_paths))
 
     # Rehash the new path: renames often carry small content edits.
-    for r in updates.get('renames', []):
+    for r in renames:
         old, new = r['old_path'], r['new_path']
         if old in by_path and new in current_paths:
             entry = by_path.pop(old)
@@ -376,15 +395,15 @@ def cmd_apply(updates_json: str) -> dict:
             entry['hash'] = disk_hashes.get(new, entry['hash'])
             by_path[new] = entry
 
-    for p in updates.get('removals', []):
+    for p in removed:
         by_path.pop(p, None)
 
-    received = len(updates.get('updates', []))
+    received = len(updates)
     applied = 0
     skipped_missing_path = []      # path not tracked by git and not retired here (hallucinated)
     skipped_unchanged_new = []     # UNCHANGED sentinel for a tracked file with no prior entry
 
-    for u in updates.get('updates', []):
+    for u in updates:
         p = u['path']
         s = u['summary']
         # Path no longer tracked by git. If it was retired (renamed/removed) in this same
@@ -416,7 +435,10 @@ def cmd_apply(updates_json: str) -> dict:
     # fill it instead of hand-diffing todo against the payload. Empty on a healthy run.
     missing_from_manifest = sorted(current_paths - set(by_path))
 
-    result = {'total_entries': len(by_path), 'received': received, 'applied': applied}
+    result = {
+        'total_entries': len(by_path), 'received': received, 'applied': applied,
+        'removed': len(removed), 'renamed': len(renames),
+    }
     if skipped_unchanged_new:
         result['skipped_unchanged_new'] = skipped_unchanged_new
     if skipped_missing_path:
@@ -426,27 +448,81 @@ def cmd_apply(updates_json: str) -> dict:
     return result
 
 
+WIRE_FILES = ('CLAUDE.md', 'AGENTS.md')
+FILETREE_REF_RE = re.compile(r'FILETREE\.md', re.IGNORECASE)
+
+
+def cmd_wire_target() -> dict:
+    """Resolve where to wire the FILETREE.md reference for CLAUDE.md / AGENTS.md.
+
+    These are commonly symlinks (e.g. → .ai/rules.md); editing the link path fails
+    with 'refusing to write through symlink'. The script resolves the real target and
+    surfaces any existing FILETREE.md mention, so the agent edits the right file once
+    instead of reading, hitting the symlink wall, then probing with readlink itself.
+    """
+    require_git()
+    out = {}
+    for name in WIRE_FILES:
+        p = Path(name)
+        if not p.exists():  # follows the link; a dangling symlink counts as absent here
+            out[name] = {'exists': False}
+            continue
+        # read_text follows the symlink to the real content.
+        text = p.read_text(encoding='utf-8', errors='replace')
+        out[name] = {
+            'exists': True,
+            'is_symlink': p.is_symlink(),
+            # Absolute real path — the agent must Edit THIS, never the link name.
+            'real_path': os.path.realpath(name),
+            # Lines mentioning FILETREE.md, so the agent can judge "already wired?"
+            # without re-reading (a backticked path / link = wired; prose / a
+            # "do not edit" warning = not a real reference).
+            'matches': [ln for ln in text.splitlines() if FILETREE_REF_RE.search(ln)],
+        }
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('command', choices=['todo', 'lint', 'apply'])
+    parser.add_argument('command', choices=['todo', 'lint', 'apply', 'wire-target'])
     parser.add_argument(
         'inputs', nargs='*',
         help='apply: one or more decision JSON files (shell glob ok); omit to read stdin',
     )
     parser.add_argument(
         '--batch-size', type=int, default=0, metavar='N',
-        help='todo: if need_llm > N, also emit pre-chunked `batches` for parallel sub-agents',
+        help='todo: items per --split batch (default 25); requires --split',
+    )
+    parser.add_argument(
+        '--split', action='store_true',
+        help='todo: write each batch to a temp dir as batch_NN.json; stdout returns '
+             'only a summary + batch file refs (no full file list to truncate / re-parse)',
     )
     args = parser.parse_args()
+
+    if args.command == 'wire-target':
+        if args.inputs:
+            parser.error('wire-target takes no file arguments')
+        print(json.dumps(cmd_wire_target(), ensure_ascii=False, indent=2))
+        return
 
     if args.command in ('todo', 'lint'):
         # `inputs` is only meaningful for apply; reject stray args instead of ignoring them.
         if args.inputs:
             parser.error(f'{args.command} takes no file arguments')
-        # --batch-size is a todo-only convenience; lint is pure drift detection.
-        if args.command == 'lint' and args.batch_size:
-            parser.error('lint takes no --batch-size')
-        result = cmd_todo(batch_size=args.batch_size)
+        # --batch-size / --split are todo-only; lint is pure drift detection.
+        if args.command == 'lint' and (args.batch_size or args.split):
+            parser.error('lint takes no --batch-size / --split')
+        # --batch-size only sizes split batches; alone it would be a silent no-op.
+        if args.batch_size and not args.split:
+            parser.error('--batch-size requires --split')
+        split_dir = tempfile.mkdtemp(prefix='filetree_') if args.split else None
+        result = cmd_todo(batch_size=args.batch_size, split_dir=split_dir)
+        if split_dir:
+            # Full lists now live in the batch files; keep stdout small so the agent
+            # never truncates and re-parses (the exact churn this flag removes).
+            result.pop('added', None)
+            result.pop('changed', None)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if args.command == 'lint':
             # CI-friendly: exit 1 on drift.
