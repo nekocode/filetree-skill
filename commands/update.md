@@ -56,14 +56,16 @@ in SKILL.md "Summary language".
 
 4. **Verify coverage, then report.** If `apply` returns `missing_from_manifest`
    or `skipped_*`, summarize those into one more part and re-run `apply` (it
-   merges) until clean. The result's `removed` / `renamed` counts are
-   authoritative. Then report: added N, removed M, renamed R, summaries updated
-   S, hashes refreshed (UNCHANGED) U.
+   merges) until clean. Then report straight from `apply`'s return — do NOT
+   re-tally your own part files: `added`, `removed`, `renamed`,
+   `summaries_updated`, `hashes_refreshed` (UNCHANGED). All five are
+   authoritative script output.
 
 ## Do not
 
 - Commit. User reviews and commits.
 - `cat` / `Read` the resulting `FILETREE.md` after apply. The `apply` stdout
-  (`{"total_entries": N, "received": ..., "applied": ...}`, plus optional
-  `skipped_*` / `missing_from_manifest` keys) already confirms success; dumping
+  (`{"total_entries", "received", "applied", "added", "summaries_updated",
+  "hashes_refreshed", "removed", "renamed"}`, plus optional `skipped_*` /
+  `missing_from_manifest` keys) already confirms success; dumping
   the full manifest is pure token waste.

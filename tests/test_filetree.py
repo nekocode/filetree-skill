@@ -756,6 +756,30 @@ class TestEdgeCases:
         assert result['applied'] == 1
         assert result['skipped_missing_path'] == ['ghost.py']
 
+    def test_cmd_apply_reports_added_updated_refreshed_breakdown(self, git_repo):
+        """apply splits applied into added/summaries_updated/hashes_refreshed so the
+        report echoes script output instead of the agent re-tallying its part files."""
+        Path('a.py').write_text('x\n')
+        Path('b.py').write_text('y\n')
+        # Seed a prior manifest for a.py and b.py.
+        filetree.cmd_apply(json.dumps({'updates': [
+            {'path': 'a.py', 'summary': 'a-old'},
+            {'path': 'b.py', 'summary': 'b-old'},
+        ]}))
+        Path('a.py').write_text('x changed\n')  # content drift; summary will be replaced
+        Path('c.py').write_text('z\n')           # brand-new file
+        result = filetree.cmd_apply(json.dumps({'updates': [
+            {'path': 'c.py', 'summary': 'c-new'},     # added
+            {'path': 'a.py', 'summary': 'a-new'},      # summaries_updated
+            {'path': 'b.py', 'summary': 'UNCHANGED'},  # hashes_refreshed
+        ]}))
+        assert result['added'] == 1
+        assert result['summaries_updated'] == 1
+        assert result['hashes_refreshed'] == 1
+        assert result['applied'] == 3  # still the sum
+        by_path = {e['path']: e for e in filetree.parse_manifest()}
+        assert by_path['b.py']['summary'] == 'b-old'  # UNCHANGED kept the summary
+
     def test_cmd_apply_computes_hash_from_disk_ignoring_payload(self, git_repo):
         """apply hashes paths itself; a bogus payload hash must not land in the manifest."""
         Path('a.py').write_text('real content\n')

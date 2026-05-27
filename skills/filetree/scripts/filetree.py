@@ -407,7 +407,14 @@ def cmd_apply(updates_json: str) -> dict:
         by_path.pop(p, None)
 
     received = len(updates)
-    applied = 0
+    # Three-way breakdown so the caller reports straight from script output instead of
+    # re-tallying its own part files (LLM arithmetic = the churn we converge away):
+    #   added            — first summary for a path absent from the prior manifest
+    #   summaries_updated — replaced summary for a path that already had an entry
+    #   hashes_refreshed  — UNCHANGED: kept old summary, refreshed hash only
+    added = 0
+    summaries_updated = 0
+    hashes_refreshed = 0
     skipped_missing_path = []      # path not tracked by git and not retired here (hallucinated)
     skipped_unchanged_new = []     # UNCHANGED sentinel for a tracked file with no prior entry
 
@@ -426,15 +433,19 @@ def cmd_apply(updates_json: str) -> dict:
             # UNCHANGED contract: refresh hash, keep old summary — linchpin of the cacheless design.
             if p in by_path:
                 by_path[p]['hash'] = h
-                applied += 1
+                hashes_refreshed += 1
             else:
                 # Tracked file with no prior entry: UNCHANGED has nothing to refresh (init mode,
                 # or a brand-new file the LLM wrongly marked UNCHANGED). Surface it instead of
                 # dropping silently — otherwise received != applied with no clue why.
                 skipped_unchanged_new.append(p)
         else:
+            # Real summary lands the same way either way; the branch only picks the counter.
+            if p in by_path:
+                summaries_updated += 1
+            else:
+                added += 1
             by_path[p] = {'path': p, 'hash': h, 'summary': s}
-            applied += 1
 
     write_manifest(list(by_path.values()))
 
@@ -443,8 +454,13 @@ def cmd_apply(updates_json: str) -> dict:
     # fill it instead of hand-diffing todo against the payload. Empty on a healthy run.
     missing_from_manifest = sorted(current_paths - set(by_path))
 
+    # `applied` stays the sum (received-minus-skipped) for callers that just check
+    # payload-vs-persisted; the three-way split feeds the update/init report directly.
+    applied = added + summaries_updated + hashes_refreshed
     result = {
         'total_entries': len(by_path), 'received': received, 'applied': applied,
+        'added': added, 'summaries_updated': summaries_updated,
+        'hashes_refreshed': hashes_refreshed,
         'removed': len(removed), 'renamed': len(renames),
     }
     if skipped_unchanged_new:
