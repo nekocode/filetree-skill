@@ -26,8 +26,29 @@ Not what it implements internally.
 - Bad: "Defines AuthMiddleware class with __init__ and __call__ methods"
 - Bad: "Handles auth" (too vague)
 
-Present tense. Match the language (Chinese / English) of existing entries.
-No marketing words.
+Present tense. No marketing words. For the language to write summaries in,
+see "Summary language" below — never pick per-file.
+
+---
+
+## Summary language
+
+One run, ONE language. Every summary in the manifest — and the command's own
+narration — uses it. Without a single anchor, parallel sub-agents each guess
+and the manifest ends up mixing Chinese and English.
+
+The command resolves the canonical language ONCE, up front, by this priority:
+
+1. The dominant natural language of `CLAUDE.md` / `AGENTS.md` (the agent
+   contract — most authoritative).
+2. Else `README` (any localized variant).
+3. Else (`/filetree:update` only) the dominant language of existing
+   FILETREE.md entries.
+4. Else English.
+
+Then it passes that one language verbatim into EVERY sub-agent prompt
+("Write all summaries in <language>"). Sub-agents never re-detect; they run in
+parallel and would diverge if left to choose.
 
 ---
 
@@ -58,8 +79,13 @@ Output a new summary string only if:
 - A major new feature has been added that meaningfully expands purpose
 - A previously central concern has been removed
 - The file has been substantially rewritten for a different goal
+- **The old summary is in the wrong language** (not the run's canonical
+  language — see "Summary language"). Rewrite it in the target language even
+  if the purpose is unchanged; this is how a legacy mixed-language manifest
+  converges — gradually, as each file's hash changes and re-enters the work
+  plan. Language mismatch ALWAYS overrides the UNCHANGED bias.
 
-When in doubt, output UNCHANGED.
+When in doubt (and the language already matches), output UNCHANGED.
 
 ---
 

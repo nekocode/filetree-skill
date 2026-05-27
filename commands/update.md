@@ -8,7 +8,11 @@ Sync FILETREE.md with the current state of the repository.
 **First**, read the shared rules at
 `${CLAUDE_PLUGIN_ROOT}/skills/filetree/SKILL.md` — especially the **UNCHANGED
 bias** section, since 80%+ of `changed` items should resolve to `"UNCHANGED"`.
-Internalize the summary style too, in case any items go to `added`.
+Internalize the summary style and **summary language** too.
+
+Conduct this whole command — your own narration AND every summary — in the
+project's canonical language. Resolve it ONCE, up front, per the priority chain
+in SKILL.md "Summary language".
 
 ## Steps
 
@@ -33,7 +37,12 @@ Internalize the summary style too, in case any items go to `added`.
    Each sub-agent prompt MUST tell them to first
    `Read ${CLAUDE_PLUGIN_ROOT}/skills/filetree/SKILL.md` (summary style, UNCHANGED
    bias, part-file shape), then Read their assigned `batch_NN.json`, then write
-   `<split_dir>/part_NN.json`.
+   `<split_dir>/part_NN.json`. It MUST also state the canonical language
+   explicitly — **"Write all summaries in <language>; if an item's `old_summary`
+   is in another language, rewrite it in <language> even when the purpose is
+   unchanged (do NOT output UNCHANGED)."** This is the one exception to the
+   UNCHANGED bias; it converges a legacy mixed-language manifest gradually —
+   one file per run, as that file's hash changes.
 
 3. **Apply** all parts in one call (shell expands the glob; the script merges,
    computes hashes from disk, and syncs removed/renamed itself):

@@ -7,8 +7,12 @@ Generate FILETREE.md from scratch for the current repository.
 
 **First**, read the shared rules at
 `${CLAUDE_PLUGIN_ROOT}/skills/filetree/SKILL.md` — it defines the summary
-style, UNCHANGED bias (not used here, but good to internalize for future
-`/filetree:update` calls), and parallelization strategy.
+style, **summary language**, UNCHANGED bias (not used here, but good to
+internalize for future `/filetree:update` calls), and parallelization strategy.
+
+Conduct this whole command — your own narration AND every summary — in the
+project's canonical language. Resolve it ONCE per SKILL.md "Summary language";
+you already read `CLAUDE.md` / `AGENTS.md` (the top priority) in step 2.
 
 ## Steps
 
@@ -73,6 +77,9 @@ style, UNCHANGED bias (not used here, but good to internalize for future
      summary **style** and part-file shape, then Read their assigned `batch_NN.json`
      and write `<split_dir>/part_NN.json` — the "UNCHANGED bias" section there is
      `/filetree:update` scoped and does NOT apply to init.
+   - **State the canonical language explicitly: "Write all summaries in <language>."**
+     Fill in the language you resolved above — sub-agents must not re-detect it, or
+     parallel batches diverge and the manifest mixes languages.
    - State explicitly: **never output `UNCHANGED`. For every NON-symlink file write a
      real summary judged by its actual content** (including auto-generated files).
      For items with a `symlink_target` field, do NOT Read — write `symlink → <target>`.
