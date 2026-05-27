@@ -75,7 +75,15 @@ def list_current_files() -> list[str]:
         ['git', '-c', 'core.quotePath=false', 'ls-files', '--others', '--exclude-standard', '-z'],
         encoding='utf-8',
     ).split('\0')
-    all_files = set(tracked) | set(untracked)
+    # Tracked files deleted from the worktree but not yet staged still appear in
+    # `ls-files`, yet `git hash-object` can't open them — exits 128 and crashes the
+    # whole batch. Drop them: the file is gone from disk, so it correctly flows into
+    # the manifest's `removed` bucket instead of needing the user to `git rm` first.
+    deleted = set(subprocess.check_output(
+        ['git', '-c', 'core.quotePath=false', 'ls-files', '--deleted', '-z'],
+        encoding='utf-8',
+    ).split('\0'))
+    all_files = (set(tracked) | set(untracked)) - deleted
     return sorted(f for f in all_files if f and f not in gitlinks and not should_skip(f))
 
 
@@ -487,7 +495,7 @@ def main():
     parser.add_argument('command', choices=['todo', 'lint', 'apply', 'wire-target'])
     parser.add_argument(
         'inputs', nargs='*',
-        help='apply: one or more decision JSON files (shell glob ok); omit to read stdin',
+        help='apply: one or more decision JSON files (shell glob ok); omit or pass `-` to read stdin',
     )
     parser.add_argument(
         '--batch-size', type=int, default=0, metavar='N',
@@ -532,7 +540,9 @@ def main():
             )
             sys.exit(0 if drift == 0 else 1)
     elif args.command == 'apply':
-        if args.inputs:
+        # `-` is the conventional stdin sentinel; treat it the same as no args so a
+        # piped payload works whether the caller omits inputs or writes `apply -`.
+        if args.inputs and args.inputs != ['-']:
             # Parallel sub-agents each drop a part file; merge them in-script so the
             # main agent never hand-joins. Shell expands the glob into argv.
             payloads = [json.loads(Path(f).read_text(encoding='utf-8')) for f in args.inputs]

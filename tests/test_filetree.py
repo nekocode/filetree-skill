@@ -422,6 +422,33 @@ class TestIntegration:
         assert 'a.py' in added_paths
         assert 'vendor/sub' not in added_paths
 
+    def test_worktree_deleted_unstaged_file_is_skipped(self, git_repo):
+        """A tracked file deleted from the worktree (deletion unstaged) must not crash.
+
+        Regression: `git ls-files` still lists it, but `git hash-object` can't open
+        it and exits 128, crashing the whole batch. It's gone from disk, so it must
+        drop out of the file list and flow into `removed` — no manual `git rm` first.
+        """
+        Path('gone.py').write_text('x\n')
+        Path('keep.py').write_text('y\n')
+        subprocess.run(['git', 'add', '-A'], check=True)
+        subprocess.run(['git', 'commit', '-q', '-m', 'init'], check=True)
+        # Manifest already tracks both files.
+        filetree.write_manifest([
+            {'path': 'gone.py', 'summary': 'stale', 'hash': 'deadbeef'},
+            {'path': 'keep.py', 'summary': 'keep', 'hash': 'cafebabe'},
+        ])
+
+        Path('gone.py').unlink()  # deleted from worktree, deletion NOT staged
+        files = filetree.list_current_files()
+        assert 'keep.py' in files
+        assert 'gone.py' not in files
+
+        # Full pipeline must not crash; gone.py becomes a removal without a `git rm`.
+        result = filetree.cmd_apply(json.dumps({'updates': []}))
+        assert result['removed'] == 1
+        assert {e['path'] for e in filetree.parse_manifest()} == {'keep.py'}
+
 
 class TestSymlinks:
     """Symlinks must hash from the link target STRING, not the target's content.
@@ -832,6 +859,18 @@ class TestEdgeCases:
         assert 'missing_from_manifest' not in out
         by_path = {e['path']: e for e in filetree.parse_manifest()}
         assert {by_path['a.py']['summary'], by_path['b.py']['summary']} == {'a', 'b'}
+
+    def test_apply_dash_reads_stdin(self, git_repo, capsys, monkeypatch):
+        """`apply -` is the stdin sentinel — same as omitting inputs, not a filename."""
+        Path('a.py').write_text('x\n')
+        import io as _io
+        monkeypatch.setattr(sys, 'stdin', _io.StringIO(
+            json.dumps({'updates': [{'path': 'a.py', 'summary': 'a'}]})))
+        monkeypatch.setattr(sys, 'argv', ['filetree.py', 'apply', '-'])
+        filetree.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out['applied'] == 1
+        assert {e['path']: e['summary'] for e in filetree.parse_manifest()} == {'a.py': 'a'}
 
     def test_hash_files_handles_many_paths(self, git_repo):
         """--stdin-paths bypasses ARG_MAX; verify a large batch hashes correctly."""
