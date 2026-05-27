@@ -528,6 +528,81 @@ class TestEdgeCases:
         assert result['applied'] == 1
         assert result['skipped_missing_path'] == ['ghost.py']
 
+    def test_cmd_apply_computes_hash_from_disk_ignoring_payload(self, git_repo):
+        """apply hashes paths itself; a bogus payload hash must not land in the manifest."""
+        Path('a.py').write_text('real content\n')
+        real_hash = filetree.hash_files(['a.py'])['a.py']
+        filetree.cmd_apply(json.dumps({
+            'updates': [{'path': 'a.py', 'hash': 'deadbeef', 'summary': 's'}],
+            'removals': [], 'renames': [],
+        }))
+        by_path = {e['path']: e for e in filetree.parse_manifest()}
+        assert by_path['a.py']['hash'] == real_hash  # disk hash, not 'deadbeef'
+
+    def test_cmd_apply_payload_without_hash_field(self, git_repo):
+        """Sub-agents emit only {path, summary}; apply must not require a hash key."""
+        Path('a.py').write_text('x\n')
+        result = filetree.cmd_apply(json.dumps({
+            'updates': [{'path': 'a.py', 'summary': 'no hash key'}],
+            'removals': [], 'renames': [],
+        }))
+        by_path = {e['path']: e for e in filetree.parse_manifest()}
+        assert by_path['a.py']['summary'] == 'no hash key'
+        assert by_path['a.py']['hash'] == filetree.hash_files(['a.py'])['a.py']
+        assert result['applied'] == 1
+
+    def test_cmd_apply_reports_missing_from_manifest(self, git_repo):
+        """A tracked file with no summary must surface as a coverage gap, not vanish."""
+        Path('covered.py').write_text('x\n')
+        Path('dropped.py').write_text('y\n')  # no summary provided — simulates a dropped sub-agent output
+        result = filetree.cmd_apply(json.dumps({
+            'updates': [{'path': 'covered.py', 'summary': 'covered'}],
+            'removals': [], 'renames': [],
+        }))
+        assert result['missing_from_manifest'] == ['dropped.py']
+
+    def test_cmd_apply_clean_run_has_no_missing(self, git_repo):
+        """When every tracked file is summarized, missing_from_manifest is absent."""
+        Path('a.py').write_text('x\n')
+        Path('b.py').write_text('y\n')
+        result = filetree.cmd_apply(json.dumps({
+            'updates': [
+                {'path': 'a.py', 'summary': 'a'},
+                {'path': 'b.py', 'summary': 'b'},
+            ],
+            'removals': [], 'renames': [],
+        }))
+        assert 'missing_from_manifest' not in result
+
+    def test_merge_payloads_concatenates(self):
+        """merge_payloads joins updates/removals/renames across part files."""
+        merged = filetree.merge_payloads([
+            {'updates': [{'path': 'a', 'summary': 'a'}], 'removals': ['x'], 'renames': []},
+            {'updates': [{'path': 'b', 'summary': 'b'}], 'removals': [], 'renames': [{'old_path': 'o', 'new_path': 'n'}]},
+            {},  # tolerate a part with missing keys
+        ])
+        assert [u['path'] for u in merged['updates']] == ['a', 'b']
+        assert merged['removals'] == ['x']
+        assert merged['renames'] == [{'old_path': 'o', 'new_path': 'n'}]
+
+    def test_apply_merges_multiple_input_files(self, git_repo, tmp_path_factory, capsys, monkeypatch):
+        """main() apply with several part files merges them — the parallel sub-agent flow."""
+        Path('a.py').write_text('x\n')
+        Path('b.py').write_text('y\n')
+        # Part files live outside the repo so they aren't seen as untracked files.
+        parts_dir = tmp_path_factory.mktemp('ft_parts')
+        part1 = parts_dir / 'part1.json'
+        part2 = parts_dir / 'part2.json'
+        part1.write_text(json.dumps({'updates': [{'path': 'a.py', 'summary': 'a'}]}))
+        part2.write_text(json.dumps({'updates': [{'path': 'b.py', 'summary': 'b'}]}))
+        monkeypatch.setattr(sys, 'argv', ['filetree.py', 'apply', str(part1), str(part2)])
+        filetree.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out['applied'] == 2
+        assert 'missing_from_manifest' not in out
+        by_path = {e['path']: e for e in filetree.parse_manifest()}
+        assert {by_path['a.py']['summary'], by_path['b.py']['summary']} == {'a', 'b'}
+
     def test_hash_files_handles_many_paths(self, git_repo):
         """--stdin-paths bypasses ARG_MAX; verify a large batch hashes correctly."""
         paths = []

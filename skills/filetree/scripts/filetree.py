@@ -269,8 +269,29 @@ def cmd_todo() -> dict:
     }
 
 
+def merge_payloads(payloads: list[dict]) -> dict:
+    """Concatenate updates / removals / renames from several decision JSONs.
+
+    Each parallel sub-agent writes its own part file; the script joins them so the
+    main agent never hand-merges. Last writer wins per path is fine — apply itself
+    is idempotent and order-independent for distinct paths.
+    """
+    merged = {'updates': [], 'removals': [], 'renames': []}
+    for p in payloads:
+        merged['updates'].extend(p.get('updates', []))
+        merged['removals'].extend(p.get('removals', []))
+        merged['renames'].extend(p.get('renames', []))
+    return merged
+
+
 def cmd_apply(updates_json: str) -> dict:
-    """Apply LLM decisions to the manifest. UNCHANGED refreshes hash only."""
+    """Apply LLM decisions to the manifest. UNCHANGED refreshes hash only.
+
+    Hashes are computed from disk here, not taken from the payload: sub-agents emit
+    only {path, summary}, so the main agent never joins todo hashes onto summaries
+    (that manual join was the dominant source of dropped files). A payload `hash`,
+    if present, is ignored.
+    """
     require_git()
     updates = json.loads(updates_json)
     current_paths = set(list_current_files())
@@ -283,13 +304,18 @@ def cmd_apply(updates_json: str) -> dict:
     retired_paths = {r['old_path'] for r in updates.get('renames', [])}
     retired_paths.update(updates.get('removals', []))
 
+    # Single batched hash pass over every path we will touch that still exists on disk.
+    to_hash = {u['path'] for u in updates.get('updates', [])}
+    to_hash.update(r['new_path'] for r in updates.get('renames', []))
+    disk_hashes = hash_files(sorted(p for p in to_hash if p in current_paths))
+
     # Rehash the new path: renames often carry small content edits.
     for r in updates.get('renames', []):
         old, new = r['old_path'], r['new_path']
         if old in by_path and new in current_paths:
             entry = by_path.pop(old)
             entry['path'] = new
-            entry['hash'] = hash_files([new]).get(new, entry['hash'])
+            entry['hash'] = disk_hashes.get(new, entry['hash'])
             by_path[new] = entry
 
     for p in updates.get('removals', []):
@@ -302,7 +328,6 @@ def cmd_apply(updates_json: str) -> dict:
 
     for u in updates.get('updates', []):
         p = u['path']
-        h = u['hash']
         s = u['summary']
         # Path no longer tracked by git. If it was retired (renamed/removed) in this same
         # call, the stale entry is benign — drop it quietly. Otherwise it's hallucinated:
@@ -311,6 +336,7 @@ def cmd_apply(updates_json: str) -> dict:
             if p not in retired_paths:
                 skipped_missing_path.append(p)
             continue
+        h = disk_hashes[p]
         if s == 'UNCHANGED':
             # UNCHANGED contract: refresh hash, keep old summary — linchpin of the cacheless design.
             if p in by_path:
@@ -326,17 +352,29 @@ def cmd_apply(updates_json: str) -> dict:
             applied += 1
 
     write_manifest(list(by_path.values()))
+
+    # Coverage gap: any indexable file still missing from the manifest after apply.
+    # A dropped sub-agent output or a forgotten summary lands here, so the caller can
+    # fill it instead of hand-diffing todo against the payload. Empty on a healthy run.
+    missing_from_manifest = sorted(current_paths - set(by_path))
+
     result = {'total_entries': len(by_path), 'received': received, 'applied': applied}
     if skipped_unchanged_new:
         result['skipped_unchanged_new'] = skipped_unchanged_new
     if skipped_missing_path:
         result['skipped_missing_path'] = skipped_missing_path
+    if missing_from_manifest:
+        result['missing_from_manifest'] = missing_from_manifest
     return result
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('command', choices=['todo', 'lint', 'apply'])
+    parser.add_argument(
+        'inputs', nargs='*',
+        help='apply: one or more decision JSON files (shell glob ok); omit to read stdin',
+    )
     args = parser.parse_args()
 
     if args.command in ('todo', 'lint'):
@@ -350,7 +388,14 @@ def main():
             )
             sys.exit(0 if drift == 0 else 1)
     elif args.command == 'apply':
-        result = cmd_apply(sys.stdin.read())
+        if args.inputs:
+            # Parallel sub-agents each drop a part file; merge them in-script so the
+            # main agent never hand-joins. Shell expands the glob into argv.
+            payloads = [json.loads(Path(f).read_text(encoding='utf-8')) for f in args.inputs]
+            updates_json = json.dumps(merge_payloads(payloads))
+        else:
+            updates_json = sys.stdin.read()
+        result = cmd_apply(updates_json)
         print(json.dumps(result, ensure_ascii=False))
 
 

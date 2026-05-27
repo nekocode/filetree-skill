@@ -31,31 +31,36 @@ Internalize the summary style too, in case any items go to `added`.
    If you already edited the file in this session, you may decide UNCHANGED from
    your own working memory without re-reading.
 
-   When `stats.need_llm > 20`, use Task sub-agents (one per ~10 files). Sub-agents
-   run with isolated context, so each sub-agent prompt MUST instruct them to first
-   `Read ${CLAUDE_PLUGIN_ROOT}/skills/filetree/SKILL.md` to internalize the summary
-   style and UNCHANGED bias before processing their batch.
+   When `stats.need_llm > 20`, parallelize per the **Part-file protocol** in
+   SKILL.md: `mktemp -d`, one Task sub-agent per ~10 files, each writing its own
+   `<parts_dir>/part_<i>.json`. Each sub-agent prompt MUST instruct them to first
+   `Read ${CLAUDE_PLUGIN_ROOT}/skills/filetree/SKILL.md` for the summary style,
+   UNCHANGED bias, and part-file shape before processing their batch.
 
-3. **Apply.** Pipe decisions to stdin:
+3. **Apply.** For the parallel path, point `apply` at the part files (the shell
+   expands the glob; the script merges them):
    ```bash
-   python "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" apply
+   python "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" apply <parts_dir>/part_*.json
    ```
-   Payload shape:
+   For a small set done inline, pipe one payload via stdin instead. Emit only
+   `{path, summary}` — `apply` computes hashes from disk:
    ```json
    {
-     "updates": [{"path": "...", "hash": "...", "summary": "..." | "UNCHANGED"}],
+     "updates": [{"path": "...", "summary": "..." | "UNCHANGED"}],
      "removals": ["path1", "path2"],
      "renames": [{"old_path": "...", "new_path": "..."}]
    }
    ```
 
-4. **Report.** added N, removed M, renamed R, summaries updated S,
-   hashes refreshed (UNCHANGED) U.
+4. **Verify coverage, then report.** If `apply` returns `missing_from_manifest`
+   (a dropped sub-agent output) or `skipped_*`, summarize those and re-run
+   `apply` (it merges) until clean. Then report: added N, removed M, renamed R,
+   summaries updated S, hashes refreshed (UNCHANGED) U.
 
 ## Do not
 
 - Commit. User reviews and commits.
 - `cat` / `Read` the resulting `FILETREE.md` after apply. The `apply` stdout
   (`{"total_entries": N, "received": ..., "applied": ...}`, plus optional
-  `skipped_*` keys) already confirms success; dumping the full manifest is pure
-  token waste.
+  `skipped_*` / `missing_from_manifest` keys) already confirms success; dumping
+  the full manifest is pure token waste.

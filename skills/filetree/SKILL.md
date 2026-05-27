@@ -68,3 +68,27 @@ When in doubt, output UNCHANGED.
 If `stats.need_llm > 20`, use the Task tool to parallelize summary
 generation. Spawn one sub-agent per ~10 files. Use claude-haiku-4-5
 for sub-agents (good enough, ~10x cheaper than Sonnet / Opus).
+
+### Part-file protocol (no hand-merging)
+
+Each sub-agent writes its OWN decision JSON to a part file; the script merges
+them. The main agent never joins hashes onto summaries — that manual step was
+the dominant source of dropped files.
+
+- Pick a parts dir outside the repo, e.g. `mktemp -d` (so part files aren't
+  seen as untracked repo files).
+- Each sub-agent's prompt: process its batch and **write its result to its own
+  `<parts_dir>/part_<i>.json`** in this shape — note `hash` is NOT needed, the
+  script computes it from disk:
+  ```json
+  {"updates": [{"path": "...", "summary": "..." | "UNCHANGED"}], "removals": [], "renames": []}
+  ```
+- Apply all parts in one call (shell expands the glob):
+  ```bash
+  python .../filetree.py apply <parts_dir>/part_*.json
+  ```
+- **Check coverage.** `apply` returns `missing_from_manifest` listing any
+  indexable file that still has no manifest entry (a dropped sub-agent output, a
+  forgotten file). Non-empty → summarize those and re-run `apply` (it merges)
+  until the key is absent. `applied < received`, `skipped_unchanged_new`, or
+  `skipped_missing_path` flag other anomalies the same way.

@@ -10,7 +10,7 @@
       "name": "filetree",
       "source": "./",
       "description": "Maintain FILETREE.md — one-line description per file with content hashes for staleness detection.",
-      "version": "0.2.2"
+      "version": "0.3.0"
     }
   ]
 }
