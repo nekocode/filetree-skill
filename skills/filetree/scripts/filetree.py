@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -77,25 +78,53 @@ def list_current_files() -> list[str]:
     return sorted(f for f in all_files if f and f not in gitlinks and not should_skip(f))
 
 
+def _read_symlink_bytes(path: str) -> bytes:
+    """Raw on-disk link target as bytes — what git hashes a symlink blob from.
+
+    Bytes, not str: os.readlink decodes with surrogateescape, and a non-UTF-8
+    target would then crash on re-encode (hashing) or json.dumps (todo output).
+    """
+    return os.readlink(os.fsencode(path))
+
+
 def hash_files(paths: list[str]) -> dict[str, str]:
     """Batch `git hash-object`; returns {path: 8-char hash}.
 
-    Uses --stdin-paths to sidestep ARG_MAX on large repos. Validates that git
-    returned one hash per input — defensive against partial-failure modes.
+    Regular files go through --stdin-paths to sidestep ARG_MAX on large repos.
+    Symlinks are hashed separately from their link-target STRING: --stdin-paths
+    *follows* a link (hashing the target's CONTENT, not the link) and exits 128
+    on a broken link, which would crash the whole batch. Git stores a symlink as
+    a blob of its target path, so hashing that string is both git-consistent
+    (matches `ls-files --stage`) and crash-proof on broken links.
     """
     if not paths:
         return {}
-    proc = subprocess.run(
-        ['git', 'hash-object', '--stdin-paths'],
-        input='\n'.join(paths),
-        capture_output=True, encoding='utf-8', check=True,
-    )
-    out = proc.stdout.strip().splitlines()
-    if len(out) != len(paths):
-        raise RuntimeError(
-            f'git hash-object: expected {len(paths)} hashes, got {len(out)}'
+    link_set = {p for p in paths if Path(p).is_symlink()}
+    regular = [p for p in paths if p not in link_set]
+    result: dict[str, str] = {}
+    if regular:
+        proc = subprocess.run(
+            ['git', 'hash-object', '--stdin-paths'],
+            input='\n'.join(regular),
+            capture_output=True, encoding='utf-8', check=True,
         )
-    return {p: h[:8] for p, h in zip(paths, out)}
+        out = proc.stdout.strip().splitlines()
+        if len(out) != len(regular):
+            raise RuntimeError(
+                f'git hash-object: expected {len(regular)} hashes, got {len(out)}'
+            )
+        result.update({p: h[:8] for p, h in zip(regular, out)})
+    for p in link_set:
+        # Hash the raw link-target BYTES as a blob (no trailing newline), exactly how
+        # git stores the symlink, so the hash matches ls-files --stage. Bytes (not str
+        # + encoding='utf-8') so a non-UTF-8 target can't raise UnicodeEncodeError.
+        proc = subprocess.run(
+            ['git', 'hash-object', '--stdin'],
+            input=_read_symlink_bytes(p),
+            capture_output=True, check=True,
+        )
+        result[p] = proc.stdout.decode('ascii').strip()[:8]
+    return result
 
 
 def detect_renames() -> list[tuple[str, str]]:
@@ -221,8 +250,14 @@ def write_manifest(entries: list[dict]) -> None:
     tmp.replace(MANIFEST_PATH)
 
 
-def cmd_todo() -> dict:
-    """Diff current files vs manifest; emit the LLM todo list."""
+def cmd_todo(batch_size: int = 0) -> dict:
+    """Diff current files vs manifest; emit the LLM todo list.
+
+    `batch_size > 0` and `need_llm > batch_size` adds a `batches` key: the LLM
+    work (added + changed items) pre-chunked into lists of `batch_size`. The main
+    agent hands one batch inline to each parallel sub-agent — no re-running todo,
+    no materializing batch files on disk.
+    """
     require_git()
     current_paths = set(list_current_files())
     manifest = parse_manifest()
@@ -256,7 +291,16 @@ def cmd_todo() -> dict:
 
     added = [{'path': p, 'hash': hashes[p]} for p in added_paths]
 
-    return {
+    # Annotate symlinks so the LLM writes "symlink → target" without Read-ing them
+    # (a Read follows the link to the target's content — wasteful, and fails on a
+    # broken link). Deterministic, so the script supplies the target directly.
+    for item in added + changed:
+        if Path(item['path']).is_symlink():
+            # Decode for JSON display; 'replace' keeps a non-UTF-8 target from
+            # crashing json.dumps (the hash still comes from the raw bytes).
+            item['symlink_target'] = _read_symlink_bytes(item['path']).decode('utf-8', 'replace')
+
+    result = {
         'added': added,
         'changed': changed,
         'removed': removed,
@@ -267,6 +311,13 @@ def cmd_todo() -> dict:
             'need_llm': len(added) + len(changed),
         },
     }
+
+    if batch_size and result['stats']['need_llm'] > batch_size:
+        items = added + changed
+        result['batches'] = [
+            items[i:i + batch_size] for i in range(0, len(items), batch_size)
+        ]
+    return result
 
 
 def merge_payloads(payloads: list[dict]) -> dict:
@@ -382,13 +433,20 @@ def main():
         'inputs', nargs='*',
         help='apply: one or more decision JSON files (shell glob ok); omit to read stdin',
     )
+    parser.add_argument(
+        '--batch-size', type=int, default=0, metavar='N',
+        help='todo: if need_llm > N, also emit pre-chunked `batches` for parallel sub-agents',
+    )
     args = parser.parse_args()
 
     if args.command in ('todo', 'lint'):
         # `inputs` is only meaningful for apply; reject stray args instead of ignoring them.
         if args.inputs:
             parser.error(f'{args.command} takes no file arguments')
-        result = cmd_todo()
+        # --batch-size is a todo-only convenience; lint is pure drift detection.
+        if args.command == 'lint' and args.batch_size:
+            parser.error('lint takes no --batch-size')
+        result = cmd_todo(batch_size=args.batch_size)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if args.command == 'lint':
             # CI-friendly: exit 1 on drift.

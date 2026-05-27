@@ -12,9 +12,10 @@ Internalize the summary style too, in case any items go to `added`.
 
 ## Steps
 
-1. **Generate work plan.**
+1. **Generate work plan.** Pass `--batch-size 25` up front so a large run comes
+   back pre-chunked — no second `todo` call to count or split:
    ```bash
-   python "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" todo
+   python "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" todo --batch-size 25
    ```
    If `FILETREE.md` doesn't exist, tell the user to run `/filetree:init` first
    and stop.
@@ -29,13 +30,17 @@ Internalize the summary style too, in case any items go to `added`.
    - `removed`, `renamed`: nothing for you to do; the script handles them in apply
 
    If you already edited the file in this session, you may decide UNCHANGED from
-   your own working memory without re-reading.
+   your own working memory without re-reading. Items with a `symlink_target`
+   field: do not Read — write `symlink → <target>` (see SKILL.md Symlinks).
 
-   When `stats.need_llm > 20`, parallelize per the **Part-file protocol** in
-   SKILL.md: `mktemp -d`, one Task sub-agent per ~10 files, each writing its own
+   When `need_llm > 25`, step 1's output carries a `batches` key. Parallelize per
+   the **Part-file protocol** in SKILL.md: `mktemp -d` once, one Task sub-agent
+   per batch, each given its batch's items **inline** and writing its own
    `<parts_dir>/part_<i>.json`. Each sub-agent prompt MUST instruct them to first
    `Read ${CLAUDE_PLUGIN_ROOT}/skills/filetree/SKILL.md` for the summary style,
-   UNCHANGED bias, and part-file shape before processing their batch.
+   UNCHANGED bias, and part-file shape before processing their batch. Do NOT
+   write batch files to disk or hand-roll a coverage check — trust
+   `missing_from_manifest`.
 
 3. **Apply.** For the parallel path, point `apply` at the part files (the shell
    expands the glob; the script merges them):

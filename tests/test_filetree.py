@@ -6,6 +6,7 @@ Coverage:
 """
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -420,6 +421,106 @@ class TestIntegration:
         added_paths = {e['path'] for e in result['added']}
         assert 'a.py' in added_paths
         assert 'vendor/sub' not in added_paths
+
+
+class TestSymlinks:
+    """Symlinks must hash from the link target STRING, not the target's content.
+
+    Regression: `git hash-object --stdin-paths` follows the link (hashing the
+    target file) and exits 128 on a broken link, crashing the whole pipeline —
+    the same failure class as submodule gitlinks.
+    """
+
+    def test_hash_matches_git_blob_not_target_content(self, git_repo):
+        Path('target.txt').write_text('the target content\n')
+        os.symlink('target.txt', 'link')
+        subprocess.run(['git', 'add', '-A'], check=True)
+
+        # git's own blob sha for the symlink (mode 120000), truncated to 8 chars.
+        stage = subprocess.check_output(['git', 'ls-files', '--stage'], encoding='utf-8')
+        link_blob = next(
+            line.split()[1] for line in stage.splitlines() if line.endswith('\tlink')
+        )[:8]
+
+        hashes = filetree.hash_files(['target.txt', 'link'])
+        assert hashes['link'] == link_blob              # git-consistent: hash of "target.txt"
+        assert hashes['link'] != hashes['target.txt']   # NOT the target's content hash
+
+    def test_broken_symlink_does_not_crash(self, git_repo):
+        """A dangling symlink must hash cleanly instead of exiting 128."""
+        os.symlink('nonexistent', 'broken')
+        subprocess.run(['git', 'add', '-A'], check=True)
+
+        hashes = filetree.hash_files(['broken'])
+        assert len(hashes['broken']) == 8
+        # Full pipeline must survive a broken link too.
+        result = filetree.cmd_todo()
+        assert 'broken' in {a['path'] for a in result['added']}
+
+    def test_non_utf8_symlink_target_does_not_crash(self, git_repo):
+        """A symlink whose target is non-UTF-8 bytes must hash and serialize cleanly."""
+        # Create the link via the bytes API so the target survives a C/POSIX locale.
+        os.symlink(b'\xff\xfe-broken-target', os.fsencode('weird_link'))
+        subprocess.run(['git', 'add', '-A'], check=True)
+
+        hashes = filetree.hash_files(['weird_link'])
+        assert len(hashes['weird_link']) == 8
+        # todo annotates + json-dumps the target — must not raise on surrogates.
+        result = filetree.cmd_todo()
+        link = next(a for a in result['added'] if a['path'] == 'weird_link')
+        assert 'symlink_target' in link
+        json.dumps(result, ensure_ascii=False)  # the real serialization path in main()
+
+    def test_todo_annotates_symlink_target(self, git_repo):
+        """Symlink entries carry `symlink_target` so the LLM skips Read-ing them."""
+        Path('target.txt').write_text('x\n')
+        os.symlink('target.txt', 'link')
+        subprocess.run(['git', 'add', '-A'], check=True)
+
+        result = filetree.cmd_todo()
+        by_path = {a['path']: a for a in result['added']}
+        assert by_path['link']['symlink_target'] == 'target.txt'
+        assert 'symlink_target' not in by_path['target.txt']
+
+
+class TestBatches:
+    """`todo --batch-size N` pre-chunks LLM work so the main agent never
+    improvises batch splitting (re-running todo, writing batch_*.txt files)."""
+
+    def _make_files(self, n):
+        for i in range(n):
+            Path(f'f{i:03d}.py').write_text(f'x = {i}\n')
+
+    def test_batches_chunk_and_cover_all_llm_work(self, git_repo):
+        self._make_files(7)
+        result = filetree.cmd_todo(batch_size=3)
+        assert 'batches' in result
+        sizes = [len(b) for b in result['batches']]
+        assert sizes == [3, 3, 1]
+        # Union of batches == every added+changed item, no dupes, no drops.
+        batched = [item['path'] for b in result['batches'] for item in b]
+        assert sorted(batched) == sorted(a['path'] for a in result['added'])
+
+    def test_no_batches_when_at_or_below_size(self, git_repo):
+        self._make_files(3)
+        assert 'batches' not in filetree.cmd_todo(batch_size=3)
+
+    def test_no_batches_when_disabled(self, git_repo):
+        self._make_files(7)
+        assert 'batches' not in filetree.cmd_todo()  # default batch_size=0
+
+    def test_main_todo_batch_size_emits_batches(self, git_repo, capsys, monkeypatch):
+        self._make_files(5)
+        monkeypatch.setattr(sys, 'argv', ['filetree.py', 'todo', '--batch-size', '2'])
+        filetree.main()
+        out = json.loads(capsys.readouterr().out)
+        assert [len(b) for b in out['batches']] == [2, 2, 1]
+
+    def test_main_lint_rejects_batch_size(self, git_repo, monkeypatch):
+        monkeypatch.setattr(sys, 'argv', ['filetree.py', 'lint', '--batch-size', '5'])
+        with pytest.raises(SystemExit) as ei:
+            filetree.main()
+        assert ei.value.code != 0
 
 
 class TestEdgeCases:

@@ -45,9 +45,10 @@ style, UNCHANGED bias (not used here, but good to internalize for future
    crashes, the wire bullet stays on disk; re-running `/filetree:init` is
    idempotent (step 2.b will see the bullet and skip).
 
-3. **Generate work plan.**
+3. **Generate work plan.** Pass `--batch-size 25` up front so a large repo comes
+   back pre-chunked — no second `todo` call to count or split:
    ```bash
-   python "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" todo
+   python "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" todo --batch-size 25
    ```
    With no existing manifest, every tracked file lands in `added`. A wired
    `CLAUDE.md` / `AGENTS.md` shows up with its post-wire hash. (A gitignored
@@ -57,20 +58,25 @@ style, UNCHANGED bias (not used here, but good to internalize for future
 4. **Write summaries.** For each `added` entry: Read the file, write a one-line
    summary per the SKILL.md style guide. Emit only `{path, summary}` — `apply`
    computes hashes from disk, so you never join todo hashes onto summaries.
+   Items with a `symlink_target` field: do not Read — write `symlink → <target>`
+   (see SKILL.md Symlinks).
 
    This is a from-scratch generation: there is no prior summary, so **every file
    needs a real summary**. `UNCHANGED` is never valid here — that sentinel belongs
    to `/filetree:update` and would be silently dropped by `apply` (init starts from
    an empty manifest, nothing to refresh).
 
-   When `stats.need_llm > 20`, parallelize per the **Part-file protocol** in
-   SKILL.md: `mktemp -d`, one Task sub-agent per ~10 files, each writing its own
-   `<parts_dir>/part_<i>.json`. Every sub-agent prompt MUST:
+   When `need_llm > 25`, step 3's output carries a `batches` key. Parallelize per
+   the **Part-file protocol** in SKILL.md: `mktemp -d` once, one Task sub-agent
+   per batch, each given its batch's items **inline** and writing its own
+   `<parts_dir>/part_<i>.json`. Do NOT write batch files to disk or hand-roll a
+   coverage check — trust `missing_from_manifest`. Every sub-agent prompt MUST:
    - Tell them to first `Read ${CLAUDE_PLUGIN_ROOT}/skills/filetree/SKILL.md` for the
      summary **style** and the part-file shape — the "UNCHANGED bias" section there
      is `/filetree:update` scoped and does NOT apply to init.
-   - State explicitly: **never output `UNCHANGED`; write a real summary for every file,
-     including symlinks and auto-generated files** (judge them by their actual content).
+   - State explicitly: **never output `UNCHANGED`. For every NON-symlink file write a
+     real summary judged by its actual content** (including auto-generated files).
+     For items with a `symlink_target` field, do NOT Read — write `symlink → <target>`.
 
 5. **Apply.** For the parallel path, point `apply` at the part files (the shell
    expands the glob; the script merges them):

@@ -63,11 +63,23 @@ When in doubt, output UNCHANGED.
 
 ---
 
+## Symlinks
+
+Some `added` / `changed` items carry a `symlink_target` field. For those:
+**do not Read the file** — a Read follows the link to the target's content
+(wasteful, and fails on a broken link). Write exactly `symlink → <target>`
+using the supplied `symlink_target`; do not infer a role you can't see.
+The script already hashes symlinks correctly from the link string.
+
+---
+
 ## Parallelization
 
-If `stats.need_llm > 20`, use the Task tool to parallelize summary
-generation. Spawn one sub-agent per ~10 files. Use claude-haiku-4-5
-for sub-agents (good enough, ~10x cheaper than Sonnet / Opus).
+If `stats.need_llm > 25`, run `todo` with `--batch-size 25` (one invocation —
+do NOT re-run `todo` just to count or to split). The script returns a `batches`
+key: the LLM work pre-chunked into lists of ~25 items each. Spawn one
+`claude-haiku-4-5` sub-agent per batch (good enough, ~10x cheaper; let the
+script's chunking decide the count — don't hand-split file lists yourself).
 
 ### Part-file protocol (no hand-merging)
 
@@ -75,11 +87,15 @@ Each sub-agent writes its OWN decision JSON to a part file; the script merges
 them. The main agent never joins hashes onto summaries — that manual step was
 the dominant source of dropped files.
 
-- Pick a parts dir outside the repo, e.g. `mktemp -d` (so part files aren't
-  seen as untracked repo files).
-- Each sub-agent's prompt: process its batch and **write its result to its own
-  `<parts_dir>/part_<i>.json`** in this shape — note `hash` is NOT needed, the
-  script computes it from disk:
+- `mktemp -d` once for the parts dir (outside the repo, so part files aren't
+  seen as untracked). Reuse that literal path in later commands — it's already
+  in your context; do NOT echo it into a tracking file to survive shells.
+- Pass each batch's items **inline in the sub-agent's prompt** (they're a small
+  JSON array straight from `batches[i]`). Do NOT materialize `batch_*.txt`
+  files on disk — that round-trip is pure overhead.
+- Each sub-agent's prompt: process its inline batch and **write its result to
+  its own `<parts_dir>/part_<i>.json`** in this shape — `hash` is NOT needed,
+  the script computes it from disk:
   ```json
   {"updates": [{"path": "...", "summary": "..." | "UNCHANGED"}], "removals": [], "renames": []}
   ```
@@ -87,8 +103,10 @@ the dominant source of dropped files.
   ```bash
   python .../filetree.py apply <parts_dir>/part_*.json
   ```
-- **Check coverage.** `apply` returns `missing_from_manifest` listing any
-  indexable file that still has no manifest entry (a dropped sub-agent output, a
-  forgotten file). Non-empty → summarize those and re-run `apply` (it merges)
-  until the key is absent. `applied < received`, `skipped_unchanged_new`, or
+- **Coverage check = `missing_from_manifest`, nothing else.** `apply` returns
+  it listing any indexable file still without a manifest entry (a dropped
+  sub-agent output, a forgotten file). Non-empty → summarize those and re-run
+  `apply` (it merges) until the key is absent. Do NOT hand-roll your own
+  coverage diff (concatenating batch lists, comparing counts) — it is redundant
+  and error-prone. `applied < received`, `skipped_unchanged_new`, or
   `skipped_missing_path` flag other anomalies the same way.
