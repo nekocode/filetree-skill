@@ -1,9 +1,8 @@
 ---
 name: filetree
 description: >
-  Shared rules for the filetree plugin — summary style, UNCHANGED bias for
-  manifest updates, parallelization strategy. Referenced by /filetree:init
-  and /filetree:update commands; not invoked directly.
+  Use when running /filetree:init or /filetree:update — the shared rules those
+  commands load before generating or syncing FILETREE.md. Not invoked directly.
 license: MIT
 ---
 
@@ -87,6 +86,28 @@ Output a new summary string only if:
 
 When in doubt (and the language already matches), output UNCHANGED.
 
+### Rationalizations — every one resolves to UNCHANGED
+
+The pressure to "be thorough" pushes toward rewriting. Each excuse below is a
+trap; the right answer is UNCHANGED.
+
+| Excuse | Reality |
+|--------|---------|
+| "The diff is large, so I should rewrite" | Diff size ≠ purpose change. A 500-line refactor with the same role is UNCHANGED. |
+| "Let me polish the old summary while I'm here" | Polishing burns ~100x the tokens of UNCHANGED and isn't an exception. Only purpose change or wrong language qualifies. |
+| "It's slightly more accurate now" | "Slightly better wording" is not "purpose changed". UNCHANGED. |
+| "I'm not sure the purpose changed" | Not sure = it didn't. UNCHANGED. |
+| "New function added, must re-describe" | A helper added to the same role doesn't expand purpose. UNCHANGED. |
+
+### Red flags — STOP, you're about to waste tokens
+
+- About to write a summary that says the same thing as `old_summary` in new words
+- Justifying a rewrite by how much the code changed rather than whether the role changed
+- "Improving" or "tidying" a summary whose language already matches
+- Reading the full file when the `git diff` already answers the purpose question
+
+**All of these mean: output `"UNCHANGED"`.**
+
 ---
 
 ## Symlinks
@@ -140,11 +161,17 @@ Apply all parts in one call (the shell expands the glob, the script merges):
 python .../filetree.py apply <split_dir>/part_*.json
 ```
 
-### Coverage check = `missing_from_manifest`, nothing else
+### Coverage gate — evidence from `apply`, never a hand-rolled diff
 
-`apply` returns `missing_from_manifest` listing any indexable file still without
-an entry (a dropped sub-agent output, a forgotten file). Non-empty → summarize
-those into one more part and re-run `apply` (it merges) until the key is absent.
-Do NOT hand-roll a coverage diff (concatenating batch lists, comparing counts) —
-it is redundant and error-prone. `applied < received`, `skipped_unchanged_new`,
-or `skipped_missing_path` flag other anomalies the same way.
+Before claiming the manifest is synced, run this gate on `apply`'s return:
+
+1. READ `missing_from_manifest` — any indexable file still without an entry
+   (a dropped sub-agent output, a forgotten file).
+2. READ the anomaly keys: `applied < received`, `skipped_unchanged_new`,
+   `skipped_missing_path`.
+3. If any are non-empty → summarize those files into one more part and re-run
+   `apply` (it merges). Loop until every key is absent/clean.
+4. ONLY THEN report — straight from `apply`'s return.
+
+Never hand-roll a coverage diff (concatenating batch lists, comparing counts):
+it is redundant and error-prone. The script's keys are the only evidence.

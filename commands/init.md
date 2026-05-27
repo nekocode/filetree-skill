@@ -11,9 +11,10 @@ style, **summary language**, UNCHANGED bias (not used here, but good to
 internalize for future `/filetree:update` calls), and parallelization strategy.
 
 Conduct this whole command — your own narration AND every summary — in the
-project's canonical language. Resolve it ONCE per SKILL.md "Summary language":
-read `CLAUDE.md` / `AGENTS.md` (the top priority) — reuse the content if step 2
-already opened it, else read it now; step 2 only reads it on the wire path.
+project's canonical language. Resolve it ONCE per SKILL.md "Summary language"
+(don't restate the chain here). Its first source is `CLAUDE.md` / `AGENTS.md`:
+step 2 opens them only on the wire path — reuse that content if it did, else
+read now.
 
 ## Steps
 
