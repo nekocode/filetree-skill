@@ -273,14 +273,21 @@ def merge_payloads(payloads: list[dict]) -> dict:
     """Concatenate updates / removals / renames from several decision JSONs.
 
     Each parallel sub-agent writes its own part file; the script joins them so the
-    main agent never hand-merges. Last writer wins per path is fine — apply itself
-    is idempotent and order-independent for distinct paths.
+    main agent never hand-merges.
+
+    `updates` are deduped per path, last writer wins — overlapping batches or a
+    retry part re-listing a file (the glob re-matches old + new parts) must not
+    leave two entries for one path, which would inflate received/applied and
+    raise a false `skipped_unchanged_new` for a path that actually landed.
     """
     merged = {'updates': [], 'removals': [], 'renames': []}
+    updates_by_path = {}  # path -> entry, preserving last occurrence
     for p in payloads:
-        merged['updates'].extend(p.get('updates', []))
+        for u in p.get('updates', []):
+            updates_by_path[u['path']] = u
         merged['removals'].extend(p.get('removals', []))
         merged['renames'].extend(p.get('renames', []))
+    merged['updates'] = list(updates_by_path.values())
     return merged
 
 
@@ -378,6 +385,9 @@ def main():
     args = parser.parse_args()
 
     if args.command in ('todo', 'lint'):
+        # `inputs` is only meaningful for apply; reject stray args instead of ignoring them.
+        if args.inputs:
+            parser.error(f'{args.command} takes no file arguments')
         result = cmd_todo()
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if args.command == 'lint':

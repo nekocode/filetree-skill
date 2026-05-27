@@ -585,6 +585,35 @@ class TestEdgeCases:
         assert merged['removals'] == ['x']
         assert merged['renames'] == [{'old_path': 'o', 'new_path': 'n'}]
 
+    def test_merge_payloads_dedups_updates_last_wins(self):
+        """Same path across parts collapses to one entry, last writer wins."""
+        merged = filetree.merge_payloads([
+            {'updates': [{'path': 'a', 'summary': 'UNCHANGED'}]},
+            {'updates': [{'path': 'a', 'summary': 'real'}]},
+        ])
+        assert merged['updates'] == [{'path': 'a', 'summary': 'real'}]
+
+    def test_apply_no_false_skip_on_duplicate_path(self, git_repo):
+        """A path landing via dedup must not also be reported as skipped_unchanged_new."""
+        Path('a.py').write_text('x\n')
+        merged = filetree.merge_payloads([
+            {'updates': [{'path': 'a.py', 'summary': 'UNCHANGED'}]},
+            {'updates': [{'path': 'a.py', 'summary': 'real'}]},
+        ])
+        result = filetree.cmd_apply(json.dumps(merged))
+        by_path = {e['path']: e for e in filetree.parse_manifest()}
+        assert by_path['a.py']['summary'] == 'real'
+        assert result['applied'] == 1
+        assert result['received'] == 1
+        assert 'skipped_unchanged_new' not in result
+
+    def test_todo_rejects_stray_args(self, git_repo, monkeypatch):
+        """todo/lint take no file arguments — stray args must error, not be ignored."""
+        monkeypatch.setattr(sys, 'argv', ['filetree.py', 'lint', 'extra.json'])
+        with pytest.raises(SystemExit) as ei:
+            filetree.main()
+        assert ei.value.code != 0
+
     def test_apply_merges_multiple_input_files(self, git_repo, tmp_path_factory, capsys, monkeypatch):
         """main() apply with several part files merges them — the parallel sub-agent flow."""
         Path('a.py').write_text('x\n')
