@@ -277,6 +277,12 @@ def cmd_apply(updates_json: str) -> dict:
     manifest = parse_manifest()
     by_path = {e['path']: e for e in manifest}
 
+    # Old paths intentionally retired in this call. A stale `updates` entry for one
+    # of these is expected (the LLM redundantly re-listed a renamed/removed file) —
+    # it must NOT be reported as a missing-path anomaly.
+    retired_paths = {r['old_path'] for r in updates.get('renames', [])}
+    retired_paths.update(updates.get('removals', []))
+
     # Rehash the new path: renames often carry small content edits.
     for r in updates.get('renames', []):
         old, new = r['old_path'], r['new_path']
@@ -289,24 +295,43 @@ def cmd_apply(updates_json: str) -> dict:
     for p in updates.get('removals', []):
         by_path.pop(p, None)
 
+    received = len(updates.get('updates', []))
+    applied = 0
+    skipped_missing_path = []      # path not tracked by git and not retired here (hallucinated)
+    skipped_unchanged_new = []     # UNCHANGED sentinel for a tracked file with no prior entry
+
     for u in updates.get('updates', []):
         p = u['path']
         h = u['hash']
         s = u['summary']
-        # Reject hallucinated paths: LLMs sometimes emit entries for nonexistent files.
+        # Path no longer tracked by git. If it was retired (renamed/removed) in this same
+        # call, the stale entry is benign — drop it quietly. Otherwise it's hallucinated:
+        # LLMs sometimes emit entries for nonexistent files. Surface those.
         if p not in current_paths:
+            if p not in retired_paths:
+                skipped_missing_path.append(p)
             continue
         if s == 'UNCHANGED':
             # UNCHANGED contract: refresh hash, keep old summary — linchpin of the cacheless design.
-            # If path was popped by an earlier rename/removal in this same call, skip silently —
-            # never persist the literal sentinel string as a real summary.
             if p in by_path:
                 by_path[p]['hash'] = h
+                applied += 1
+            else:
+                # Tracked file with no prior entry: UNCHANGED has nothing to refresh (init mode,
+                # or a brand-new file the LLM wrongly marked UNCHANGED). Surface it instead of
+                # dropping silently — otherwise received != applied with no clue why.
+                skipped_unchanged_new.append(p)
         else:
             by_path[p] = {'path': p, 'hash': h, 'summary': s}
+            applied += 1
 
     write_manifest(list(by_path.values()))
-    return {'total_entries': len(by_path)}
+    result = {'total_entries': len(by_path), 'received': received, 'applied': applied}
+    if skipped_unchanged_new:
+        result['skipped_unchanged_new'] = skipped_unchanged_new
+    if skipped_missing_path:
+        result['skipped_missing_path'] = skipped_missing_path
+    return result
 
 
 def main():

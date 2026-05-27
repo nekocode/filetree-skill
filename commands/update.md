@@ -56,5 +56,6 @@ Internalize the summary style too, in case any items go to `added`.
 
 - Commit. User reviews and commits.
 - `cat` / `Read` the resulting `FILETREE.md` after apply. The `apply` stdout
-  (`{"total_entries": N}`) already confirms success; dumping the full manifest
-  is pure token waste.
+  (`{"total_entries": N, "received": ..., "applied": ...}`, plus optional
+  `skipped_*` keys) already confirms success; dumping the full manifest is pure
+  token waste.

@@ -57,10 +57,21 @@ style, UNCHANGED bias (not used here, but good to internalize for future
 4. **Write summaries.** For each `added` entry: Read the file, write a one-line
    summary per the SKILL.md style guide.
 
+   This is a from-scratch generation: there is no prior summary, so **every file
+   needs a real summary**. `UNCHANGED` is never valid here — that sentinel belongs
+   to `/filetree:update` and would be silently dropped by `apply` (init starts from
+   an empty manifest, nothing to refresh).
+
    When `stats.need_llm > 20`, use Task sub-agents (one per ~10 files). Sub-agents
-   run with isolated context, so each sub-agent prompt MUST instruct them to first
-   `Read ${CLAUDE_PLUGIN_ROOT}/skills/filetree/SKILL.md` to internalize the summary
-   style before writing — otherwise shared rules won't apply to their output.
+   run with isolated context, so each sub-agent prompt MUST:
+   - Tell them to first `Read ${CLAUDE_PLUGIN_ROOT}/skills/filetree/SKILL.md` for the
+     summary **style** only — the "UNCHANGED bias" section there is `/filetree:update`
+     scoped and does NOT apply to init.
+   - State explicitly: **never output `UNCHANGED`; write a real summary for every file,
+     including symlinks and auto-generated files** (judge them by their actual content).
+
+   After collecting sub-agent output, verify no entry's summary is the literal
+   `"UNCHANGED"` before building the apply payload; rewrite any that slipped through.
 
 5. **Apply.** Pipe the decision JSON to stdin:
    ```bash
@@ -77,7 +88,10 @@ style, UNCHANGED bias (not used here, but good to internalize for future
 
 6. **Report.** Total files indexed, files skipped (binary / lock), wired
    files (and skipped with reason: absent / already-wired / declined),
-   time taken.
+   time taken. Also check `apply`'s return: if `applied < received`, or
+   `skipped_unchanged_new` / `skipped_missing_path` is non-empty, those
+   files did NOT land in the manifest — re-summarize them (no `UNCHANGED`)
+   and re-run step 5 until `applied == received`.
 
 ## Do not
 

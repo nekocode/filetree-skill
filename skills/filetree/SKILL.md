@@ -31,7 +31,12 @@ No marketing words.
 
 ---
 
-## UNCHANGED bias (for /filetree:update)
+## UNCHANGED bias (for /filetree:update ONLY)
+
+> **Scope.** This entire section applies to `/filetree:update` only. During
+> `/filetree:init` the manifest starts empty, so there is no old summary to
+> keep — `UNCHANGED` has nothing to refresh and `apply` will drop it. In init,
+> every file gets a real summary. Do not apply this bias to init sub-tasks.
 
 **Why this matters.** Hash changes trigger the LLM, but most code changes
 (typos, refactors, comments, small additions) don't change a file's purpose.

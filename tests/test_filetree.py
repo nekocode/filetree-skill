@@ -483,7 +483,7 @@ class TestEdgeCases:
 
         subprocess.run(['git', 'mv', 'a.py', 'b.py'], check=True)
         # Same call: rename a→b AND a stale UNCHANGED update referring to 'a.py'.
-        filetree.cmd_apply(json.dumps({
+        result = filetree.cmd_apply(json.dumps({
             'updates': [{'path': 'a.py', 'hash': h_a, 'summary': 'UNCHANGED'}],
             'removals': [], 'renames': [{'old_path': 'a.py', 'new_path': 'b.py'}],
         }))
@@ -492,6 +492,41 @@ class TestEdgeCases:
         by_path = {e['path']: e for e in manifest}
         assert 'a.py' not in by_path
         assert by_path['b.py']['summary'] == 'orig'
+        # The retired old path is benign — it must NOT be flagged as a missing-path anomaly.
+        assert 'skipped_missing_path' not in result
+
+    def test_cmd_apply_unchanged_for_new_path_is_surfaced(self, git_repo):
+        """UNCHANGED with no prior entry (e.g. init mode) must be reported, not dropped silently."""
+        Path('real.py').write_text('x\n')
+        Path('fresh.py').write_text('y\n')
+        result = filetree.cmd_apply(json.dumps({
+            'updates': [
+                {'path': 'real.py', 'hash': '11111111', 'summary': 'real'},
+                {'path': 'fresh.py', 'hash': '22222222', 'summary': 'UNCHANGED'},
+            ],
+            'removals': [], 'renames': [],
+        }))
+        # real.py persisted; fresh.py's UNCHANGED has nothing to refresh → surfaced, sentinel never written.
+        by_path = {e['path']: e for e in filetree.parse_manifest()}
+        assert by_path['real.py']['summary'] == 'real'
+        assert 'fresh.py' not in by_path
+        assert result['received'] == 2
+        assert result['applied'] == 1
+        assert result['skipped_unchanged_new'] == ['fresh.py']
+
+    def test_cmd_apply_reports_received_applied_counts(self, git_repo):
+        """apply exposes received/applied so callers can detect payload != persisted."""
+        Path('real.py').write_text('x\n')
+        result = filetree.cmd_apply(json.dumps({
+            'updates': [
+                {'path': 'real.py', 'hash': '11111111', 'summary': 'real'},
+                {'path': 'ghost.py', 'hash': 'deadbeef', 'summary': 'hallucinated'},
+            ],
+            'removals': [], 'renames': [],
+        }))
+        assert result['received'] == 2
+        assert result['applied'] == 1
+        assert result['skipped_missing_path'] == ['ghost.py']
 
     def test_hash_files_handles_many_paths(self, git_repo):
         """--stdin-paths bypasses ARG_MAX; verify a large batch hashes correctly."""
