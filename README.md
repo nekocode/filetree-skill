@@ -87,18 +87,19 @@ Optional. Drop a `.filetree.json` at the repo root and commit it to share with t
 ```markdown
 # Project Filetree
 
-_Auto-maintained by `/filetree:update`. Each entry carries a content hash; mismatched hashes indicate stale summaries._
+_Auto-maintained by `/filetree:update`. Content hashes live in the sidecar `FILETREE.hash.json`; do not edit it by hand._
 
 - src
   - auth
-    - `middleware.py`: JWT validation middleware; parses bearer token and injects user_id into request context <!--hash:a1b2c3d4-->
-    - `jwt_utils.py`: Pure JWT signing / verification helpers, framework-agnostic <!--hash:e5f6a7b8-->
-- `README.md`: Project entry doc <!--hash:9a8b7c6d-->
+    - `middleware.py`: JWT validation middleware; parses bearer token and injects user_id into request context
+    - `jwt_utils.py`: Pure JWT signing / verification helpers, framework-agnostic
+- `README.md`: Project entry doc
 ```
 
 - Nested unordered list = directory tree; 2 spaces per depth level
-- Directory line `- name` is structural (no hash); file line `` - `name`: summary <!--hash:--> ``
+- Directory line `- name` is structural; file line `` - `name`: summary `` — pure prose, no inline noise
 - Per level: directories first, then files, each lexical → no spurious diffs
+- Content hashes are stored out-of-band in `FILETREE.hash.json` (`{path: hash}`), keeping the manifest ~18% smaller and free of per-line hex noise. A pre-sidecar manifest with inline `<!--hash:-->` is auto-migrated on the next update.
 
 ## Compatibility
 

@@ -87,18 +87,19 @@ Agent 就会把 `FILETREE.md` 当索引读 —— 一次读取，省掉摸索阶
 ```markdown
 # Project Filetree
 
-_Auto-maintained by `/filetree:update`. Each entry carries a content hash; mismatched hashes indicate stale summaries._
+_Auto-maintained by `/filetree:update`. Content hashes live in the sidecar `FILETREE.hash.json`; do not edit it by hand._
 
 - src
   - auth
-    - `middleware.py`: JWT 校验中间件，从请求头解析 token 并注入 user_id 到上下文 <!--hash:a1b2c3d4-->
-    - `jwt_utils.py`: JWT 签发与校验的纯函数工具，不依赖 framework <!--hash:e5f6a7b8-->
-- `README.md`: 项目入口说明 <!--hash:9a8b7c6d-->
+    - `middleware.py`: JWT 校验中间件，从请求头解析 token 并注入 user_id 到上下文
+    - `jwt_utils.py`: JWT 签发与校验的纯函数工具，不依赖 framework
+- `README.md`: 项目入口说明
 ```
 
 - 嵌套无序列表 = 目录树；每层缩进 2 空格
-- 目录行 `- name` 纯结构（无 hash）；文件行 `` - `name`: 摘要 <!--hash:--> ``
+- 目录行 `- name` 纯结构；文件行 `` - `name`: 摘要 `` —— 纯文本，无行内噪声
 - 每层目录在前、文件在后，各自字典序 → 无假 diff
+- 内容 hash 存到旁路文件 `FILETREE.hash.json`（`{path: hash}`），manifest 因此缩小约 18% 且无逐行 hex 噪声。旧版行内 `<!--hash:-->` manifest 会在下次 update 时自动迁移。
 
 ## 兼容性
 

@@ -16,17 +16,24 @@ from filetree_config import (
     DEFAULT_MANIFEST_PATH,
     Config,
     filter_indexable,
+    hash_path_for,
     load_config,
 )
 
 # Nested markdown list format. Indent is 2 spaces per depth level (depth = indent / 2).
-#   File line: `<indent>- `name`: summary <!--hash:xxxxxxxx-->`  (backtick-quoted, carries hash)
-#   Dir line:  `<indent>- name`                                  (no backtick, no hash, structural only)
+#   File line: `<indent>- `name`: summary`     (backtick-quoted; hash lives in the sidecar)
+#   Dir line:  `<indent>- name`                (no backtick, structural only)
 # The backtick prefix is what tells a file line apart from a directory line.
 # DIR_RE is only ever matched against the machine-written manifest, which has no
 # prose bullets — a stray top-level `- note` would otherwise read as a directory.
+#
+# The trailing ` <!--hash:xxxxxxxx-->` group is OPTIONAL: current manifests carry no
+# inline hash (it moved to FILETREE.hash.json), but a pre-sidecar manifest still does.
+# Matching both lets parse_manifest auto-migrate — it reads the legacy inline hash, and
+# the next write_manifest drops it (the hash is now persisted in the sidecar instead).
 FILE_RE = re.compile(
-    r'^(?P<indent>(?:  )*)- `(?P<name>[^`]+)`: (?P<summary>.+?) <!--hash:(?P<hash>[a-f0-9]+)-->\s*$'
+    r'^(?P<indent>(?:  )*)- `(?P<name>[^`]+)`: (?P<summary>.+?)'
+    r'(?: <!--hash:(?P<hash>[a-f0-9]+)-->)?\s*$'
 )
 DIR_RE = re.compile(r'^(?P<indent>(?:  )*)- (?P<name>(?!`).+?)\s*$')
 
@@ -226,16 +233,66 @@ def _unquote_git_path(s: str) -> str:
     return raw.decode('utf-8', errors='replace')
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write text via tmp + replace, so a crash mid-write can't truncate the target.
+
+    Also creates the parent dir — a relocated manifest (e.g. docs/FILETREE.md) and its
+    sidecar both need it. Shared by write_manifest and write_hashes.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + '.tmp')
+    tmp.write_text(text, encoding='utf-8')
+    tmp.replace(path)
+
+
+def read_hashes(manifest_path: str = DEFAULT_MANIFEST_PATH) -> dict[str, str]:
+    """Load the {path: hash} sidecar for a manifest. Absent or corrupt -> empty.
+
+    A corrupt/unreadable sidecar degrades to "no stored hashes", which makes every
+    common file read as changed and re-enter the LLM work plan. That is wasteful but
+    safe (the UNCHANGED bias refreshes the hash and keeps the summary) — far better
+    than crashing the whole run on a malformed JSON byte.
+    """
+    sidecar = Path(hash_path_for(manifest_path))
+    if not sidecar.exists():
+        return {}
+    try:
+        data = json.loads(sidecar.read_text(encoding='utf-8'))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    # Defend against a hand-edited sidecar that isn't a flat str->str map.
+    if not isinstance(data, dict):
+        return {}
+    # JSON object keys are always strings, so only the values need guarding against a
+    # hand-edited sidecar (e.g. a nested object or number in place of a hash).
+    return {k: v for k, v in data.items() if isinstance(v, str)}
+
+
+def write_hashes(entries: list[dict], manifest_path: str = DEFAULT_MANIFEST_PATH) -> None:
+    """Persist {path: hash} to the sidecar, atomically (tmp + replace)."""
+    sidecar = Path(hash_path_for(manifest_path))
+    payload = {e['path']: e['hash'] for e in entries}
+    # sort_keys + trailing newline: stable, line-oriented diffs in git.
+    text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + '\n'
+    _atomic_write_text(sidecar, text)
+
+
 def parse_manifest(manifest_path: str = DEFAULT_MANIFEST_PATH) -> list[dict]:
     """Read the nested-list manifest into [{path, summary, hash}].
 
     Reconstructs each file's full path from its indentation depth: a stack holds
     the directory name at every depth, so a file at depth d joins dir_stack[:d]
     with its own name. Directory lines only update the stack; files emit entries.
+
+    The hash comes from the sidecar (read_hashes), joined by path. A legacy inline
+    `<!--hash:-->` is used only as a fallback when the sidecar lacks that path — this
+    is the auto-migration seam: old manifests parse correctly, and the next write
+    splits the hash out. Missing on both sides -> '' (the file re-enters the work plan).
     """
     mpath = Path(manifest_path)
     if not mpath.exists():
         return []
+    sidecar_hashes = read_hashes(manifest_path)
     entries = []
     dir_stack: list[str] = []  # dir_stack[d] = directory name declared at depth d
     for line in mpath.read_text(encoding='utf-8').splitlines():
@@ -248,7 +305,7 @@ def parse_manifest(manifest_path: str = DEFAULT_MANIFEST_PATH) -> list[dict]:
             entries.append({
                 'path': full_path,
                 'summary': m.group('summary').strip(),
-                'hash': m.group('hash'),
+                'hash': sidecar_hashes.get(full_path, m.group('hash') or ''),
             })
             continue
         m = DIR_RE.match(line)
@@ -272,10 +329,12 @@ def write_manifest(entries: list[dict], manifest_path: str = DEFAULT_MANIFEST_PA
             node = node['dirs'].setdefault(d, {'dirs': {}, 'files': []})
         node['files'].append(e)
 
+    sidecar_name = hash_path_for(manifest_path)
     lines = [
         '# Project Filetree',
         '',
-        '_Auto-maintained by `/filetree:update`. Each entry carries a content hash; mismatched hashes indicate stale summaries._',
+        f'_Auto-maintained by `/filetree:update`. Content hashes live in the sidecar '
+        f'`{sidecar_name}`; do not edit it by hand._',
         '',
     ]
 
@@ -289,18 +348,12 @@ def write_manifest(entries: list[dict], manifest_path: str = DEFAULT_MANIFEST_PA
         # path is identical to sorting by basename — and avoids a Path() per compare.
         for e in sorted(node['files'], key=lambda x: x['path']):
             filename = e['path'].rsplit('/', 1)[-1]
-            lines.append(f"{indent}- `{filename}`: {e['summary']} <!--hash:{e['hash']}-->")
+            lines.append(f"{indent}- `{filename}`: {e['summary']}")
 
     emit(root, 0)
     lines.append('')  # trailing newline at EOF
 
-    # Atomic write: tmp + os.replace, so a crash mid-write can't truncate the manifest.
-    mpath = Path(manifest_path)
-    # A relocated manifest (e.g. docs/FILETREE.md) needs its parent dir to exist.
-    mpath.parent.mkdir(parents=True, exist_ok=True)
-    tmp = mpath.with_name(mpath.name + '.tmp')
-    tmp.write_text('\n'.join(lines), encoding='utf-8')
-    tmp.replace(mpath)
+    _atomic_write_text(Path(manifest_path), '\n'.join(lines))
 
 
 DEFAULT_BATCH_SIZE = 25
@@ -497,7 +550,13 @@ def cmd_apply(updates_json: str, config: Config = None) -> dict:
                 added += 1
             by_path[p] = {'path': p, 'hash': h, 'summary': s}
 
-    write_manifest(list(by_path.values()), config.manifest_path)
+    # The manifest carries human/agent-facing prose; the sidecar carries the hashes.
+    # Both are written from the same in-memory entries, in the same call, so they can
+    # never drift. write_hashes second: a crash between them leaves a stale sidecar,
+    # which only over-reports `changed` next run (safe) — never drops a summary.
+    final_entries = list(by_path.values())
+    write_manifest(final_entries, config.manifest_path)
+    write_hashes(final_entries, config.manifest_path)
 
     # Coverage gap: any indexable file still missing from the manifest after apply.
     # A dropped sub-agent output or a forgotten summary lands here, so the caller can

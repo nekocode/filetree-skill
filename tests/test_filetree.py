@@ -91,8 +91,10 @@ class TestWriteManifest:
         text = Path('FILETREE.md').read_text(encoding='utf-8')
         # Directories first, then root files: the `src` dir line precedes README.md.
         assert text.index('- src\n') < text.index('`README.md`')
-        # Nested files carry 2-space indentation under their directory.
-        assert '  - `a.py`: a <!--hash:33333333-->' in text
+        # Nested files carry 2-space indentation under their directory; no inline hash.
+        assert '  - `a.py`: a\n' in text
+        # Hashes live in the sidecar now — the manifest is pure prose.
+        assert '<!--hash:' not in text
         # Entries under src in lexical order.
         assert text.index('a.py') < text.index('b.py')
 
@@ -107,21 +109,90 @@ class TestWriteManifest:
         assert '/update-filetree' not in text  # Legacy name forbidden.
 
     def test_round_trip(self, tmp_path, monkeypatch):
-        """write → parse must round-trip cleanly."""
+        """write → parse must round-trip cleanly (manifest + sidecar together)."""
         monkeypatch.chdir(tmp_path)
         original = [
             {'path': 'src/auth.py', 'summary': '认证模块', 'hash': 'aaaaaaaa'},
             {'path': 'main.py', 'summary': 'entry point', 'hash': 'bbbbbbbb'},
         ]
         filetree.write_manifest(original)
+        filetree.write_hashes(original)
         parsed = filetree.parse_manifest()
         # Path set matches.
         assert {e['path'] for e in parsed} == {e['path'] for e in original}
-        # Fields match.
+        # Fields match — hash comes back via the sidecar join.
         by_path = {e['path']: e for e in parsed}
         for e in original:
             assert by_path[e['path']]['summary'] == e['summary']
             assert by_path[e['path']]['hash'] == e['hash']
+
+
+class TestHashSidecar:
+    def test_write_hashes_is_sorted_flat_map(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        filetree.write_hashes([
+            {'path': 'src/b.py', 'summary': 'b', 'hash': 'bbbbbbbb'},
+            {'path': 'a.py', 'summary': 'a', 'hash': 'aaaaaaaa'},
+        ])
+        data = json.loads(Path('FILETREE.hash.json').read_text(encoding='utf-8'))
+        assert data == {'a.py': 'aaaaaaaa', 'src/b.py': 'bbbbbbbb'}
+        # Sorted keys for stable git diffs: 'a.py' is written before 'src/b.py'.
+        raw = Path('FILETREE.hash.json').read_text(encoding='utf-8')
+        assert raw.index('"a.py"') < raw.index('"src/b.py"')
+
+    def test_read_hashes_absent_is_empty(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        assert filetree.read_hashes() == {}
+
+    def test_read_hashes_corrupt_degrades_to_empty(self, tmp_path, monkeypatch):
+        """A malformed sidecar must not crash the run — it degrades to no stored hashes."""
+        monkeypatch.chdir(tmp_path)
+        Path('FILETREE.hash.json').write_text('{not json', encoding='utf-8')
+        assert filetree.read_hashes() == {}
+
+    def test_read_hashes_non_dict_degrades_to_empty(self, tmp_path, monkeypatch):
+        """Valid JSON that isn't a flat map (e.g. a list) is rejected, not crashed on."""
+        monkeypatch.chdir(tmp_path)
+        Path('FILETREE.hash.json').write_text('["a.py", "b.py"]', encoding='utf-8')
+        assert filetree.read_hashes() == {}
+
+    def test_sidecar_wins_over_legacy_inline_hash(self, tmp_path, monkeypatch):
+        """When both exist, the sidecar is authoritative; inline is only a fallback."""
+        monkeypatch.chdir(tmp_path)
+        Path('FILETREE.md').write_text(
+            '# Project Filetree\n\n- `a.py`: thing <!--hash:11111111-->\n',
+            encoding='utf-8',
+        )
+        Path('FILETREE.hash.json').write_text('{"a.py": "99999999"}', encoding='utf-8')
+        entry = filetree.parse_manifest()[0]
+        assert entry['hash'] == '99999999'
+
+    def test_parse_auto_migrates_legacy_inline_hash(self, tmp_path, monkeypatch):
+        """A pre-sidecar manifest (inline hash, no sidecar) parses via the inline fallback,
+        and the next write splits the hash out — manifest goes pure, sidecar is born."""
+        monkeypatch.chdir(tmp_path)
+        Path('FILETREE.md').write_text(
+            '# Project Filetree\n\n- `a.py`: thing <!--hash:abcd1234-->\n',
+            encoding='utf-8',
+        )
+        assert not Path('FILETREE.hash.json').exists()
+        entries = filetree.parse_manifest()
+        assert entries[0]['hash'] == 'abcd1234'  # read from legacy inline
+        # Re-emit: manifest loses the inline hash, sidecar gains it.
+        filetree.write_manifest(entries)
+        filetree.write_hashes(entries)
+        assert '<!--hash:' not in Path('FILETREE.md').read_text(encoding='utf-8')
+        assert json.loads(Path('FILETREE.hash.json').read_text(encoding='utf-8')) == {
+            'a.py': 'abcd1234'
+        }
+
+    def test_missing_hash_everywhere_is_empty_string(self, tmp_path, monkeypatch):
+        """No sidecar entry and no inline hash → '' so the file re-enters the work plan."""
+        monkeypatch.chdir(tmp_path)
+        Path('FILETREE.md').write_text(
+            '# Project Filetree\n\n- `a.py`: thing\n', encoding='utf-8',
+        )
+        assert filetree.parse_manifest()[0]['hash'] == ''
 
 
 # ===== Integration tests: real git repository =====

@@ -17,6 +17,16 @@ from pathlib import Path
 DEFAULT_MANIFEST_PATH = 'FILETREE.md'
 CONFIG_PATH = Path('.filetree.json')
 
+
+def hash_path_for(manifest_path: str) -> str:
+    """Sidecar that stores content hashes out-of-band: FILETREE.md -> FILETREE.hash.json.
+
+    Hashes are dead weight to the agent reading the manifest — 8 hex chars of noise on
+    every file line, ~18% of the manifest's tokens. Storing them in a flat {path: hash}
+    sidecar keeps the manifest pure prose; the script joins them back at parse time.
+    """
+    return Path(manifest_path).with_suffix('.hash.json').as_posix()
+
 # Binary, asset and lock files — LLM summaries add no value here.
 SKIP_EXTENSIONS = {
     '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.svg', '.bmp',
@@ -163,14 +173,16 @@ def filter_indexable(paths: list[str], config: Config) -> list[str]:
     """Layered file filter, precedence high → low:
 
     1. config.exclude   — explicit user removal, wins over everything
-    2. the manifest file — never index the manifest's own output
+    2. the manifest file and its hash sidecar — never index the script's own output
     3. built-in skip     — binary / lock files, UNLESS config.include rescues the path
 
     The manifest is matched by EXACT path (config.manifest_path), not basename: a stray
     file that merely shares the name (e.g. a nested packages/x/FILETREE.md) is an ordinary
     indexable file, by design — the manifest's identity is its configured path, not a name.
+    The hash sidecar (FILETREE.hash.json) is filtered the same way for the same reason.
     """
     paths = list(paths)
+    own_outputs = {config.manifest_path, hash_path_for(config.manifest_path)}
     excluded = match_gitignore(paths, config.exclude)
     # `included` only ever rescues should_skip paths (built-in binary/lock skip), so only
     # those go through the matcher — piping every code file to git check-ignore is waste.
@@ -180,7 +192,7 @@ def filter_indexable(paths: list[str], config: Config) -> list[str]:
     for p in paths:
         if p in excluded:
             continue
-        if p == config.manifest_path:
+        if p in own_outputs:
             continue
         if p in skip_set and p not in included:
             continue
