@@ -89,19 +89,16 @@ Agent 就会把 `FILETREE.md` 当索引读 —— 一次读取，省掉摸索阶
 
 _Auto-maintained by `/filetree:update`. Each entry carries a content hash; mismatched hashes indicate stale summaries._
 
-## src/auth/
-
-- `middleware.py` — JWT 校验中间件，从请求头解析 token 并注入 user_id 到上下文 <!--hash:a1b2c3d4-->
-- `jwt_utils.py` — JWT 签发与校验的纯函数工具，不依赖 framework <!--hash:e5f6g7h8-->
-
-## (root)/
-
-- `README.md` — 项目入口说明 <!--hash:9a8b7c6d-->
+- src
+  - auth
+    - `middleware.py`: JWT 校验中间件，从请求头解析 token 并注入 user_id 到上下文 <!--hash:a1b2c3d4-->
+    - `jwt_utils.py`: JWT 签发与校验的纯函数工具，不依赖 framework <!--hash:e5f6a7b8-->
+- `README.md`: 项目入口说明 <!--hash:9a8b7c6d-->
 ```
 
-- 二级标题 = 目录路径；根目录文件归 `(root)/`
-- 每条：文件名 + 摘要 + 8 字符 content hash
-- 稳定排序 → 无假 diff
+- 嵌套无序列表 = 目录树；每层缩进 2 空格
+- 目录行 `- name` 纯结构（无 hash）；文件行 `` - `name`: 摘要 <!--hash:--> ``
+- 每层目录在前、文件在后，各自字典序 → 无假 diff
 
 ## 兼容性
 

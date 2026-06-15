@@ -89,19 +89,16 @@ Optional. Drop a `.filetree.json` at the repo root and commit it to share with t
 
 _Auto-maintained by `/filetree:update`. Each entry carries a content hash; mismatched hashes indicate stale summaries._
 
-## src/auth/
-
-- `middleware.py` — JWT validation middleware; parses bearer token and injects user_id into request context <!--hash:a1b2c3d4-->
-- `jwt_utils.py` — Pure JWT signing / verification helpers, framework-agnostic <!--hash:e5f6g7h8-->
-
-## (root)/
-
-- `README.md` — Project entry doc <!--hash:9a8b7c6d-->
+- src
+  - auth
+    - `middleware.py`: JWT validation middleware; parses bearer token and injects user_id into request context <!--hash:a1b2c3d4-->
+    - `jwt_utils.py`: Pure JWT signing / verification helpers, framework-agnostic <!--hash:e5f6a7b8-->
+- `README.md`: Project entry doc <!--hash:9a8b7c6d-->
 ```
 
-- Section header = directory path; root files under `(root)/`
-- Each entry: filename + summary + 8-char content hash
-- Stable sort → no spurious diffs
+- Nested unordered list = directory tree; 2 spaces per depth level
+- Directory line `- name` is structural (no hash); file line `` - `name`: summary <!--hash:--> ``
+- Per level: directories first, then files, each lexical → no spurious diffs
 
 ## Compatibility
 
