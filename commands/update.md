@@ -12,7 +12,8 @@ Internalize the summary style and **summary language** too.
 
 Conduct this whole command — your own narration AND every summary — in the
 project's canonical language. Resolve it ONCE, up front, per the priority chain
-in SKILL.md "Summary language".
+in SKILL.md "Summary language" — the `config.language` from step 1's output wins
+when set.
 
 ## Steps
 
@@ -21,16 +22,22 @@ in SKILL.md "Summary language".
    ```bash
    python "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" todo --split
    ```
-   If `FILETREE.md` doesn't exist, tell the user to run `/filetree:init` first
-   and stop. Otherwise the output gives `split_dir` + `batches` (see SKILL.md
-   "Processing the work plan").
+   The output carries a `config` block (`manifest_path`, `language`) reflecting
+   `.filetree.json` — read both from there, never re-parse the config file. If
+   `manifest_exists` is `false`, the manifest hasn't been created yet — tell the
+   user to run `/filetree:init` first and stop. (Use this flag, not an empty
+   `total_in_manifest`: a present-but-empty manifest also reads 0.) Otherwise the
+   output gives `split_dir` + `batches` (see SKILL.md "Processing the work plan").
 
 2. **Process the batches** per SKILL.md (0 → skip to apply; 1 → inline; many →
    one `claude-haiku-4-5` sub-agent per batch). Each batch item is decided thus:
    - `added` (no `old_summary`): Read file, write fresh summary.
    - `changed` (has `old_summary`): **prefer `git diff HEAD -- <path>` over Read**
      — diff is 10–100× smaller and shows exactly what changed, all an UNCHANGED
-     decision needs. Most changes → `"UNCHANGED"` (see UNCHANGED bias).
+     decision needs. If the diff is EMPTY (the change was already committed, so
+     working tree == HEAD), fall back to `Read`ing the file — the hash moved, so
+     judging purpose from a blank diff would falsely yield UNCHANGED. Most changes
+     → `"UNCHANGED"` (see UNCHANGED bias).
    - `symlink_target` present: do NOT Read — write `symlink → <target>`.
 
    You don't handle removed/renamed — `apply` recomputes them from repo state.
@@ -54,17 +61,20 @@ in SKILL.md "Summary language".
    (deletion/rename-only drift) there are no part files to glob — pipe an empty
    payload so apply still runs: `echo '{"updates": []}' | python ... apply`.
 
-4. **Verify coverage, then report.** If `apply` returns `missing_from_manifest`
-   or `skipped_*`, summarize those into one more part and re-run `apply` (it
-   merges) until clean. Then report straight from `apply`'s return — do NOT
-   re-tally your own part files: `added`, `removed`, `renamed`,
+4. **Verify coverage, then report.** The completion gate is `missing_from_manifest`
+   being empty; `skipped_unchanged_new` / `skipped_missing_path` are bad summaries to
+   fix (a wrong `UNCHANGED`, a hallucinated path). Summarize those into one more part
+   and re-run `apply` (it merges) until they clear. Ignore `skipped_excluded` (real
+   files the config keeps out — nothing to fix; don't loop on `applied == received`,
+   which these legitimately hold below). Then report straight from `apply`'s return —
+   do NOT re-tally your own part files: `added`, `removed`, `renamed`,
    `summaries_updated`, `hashes_refreshed` (UNCHANGED). All five are
    authoritative script output.
 
 ## Do not
 
 - Commit. User reviews and commits.
-- `cat` / `Read` the resulting `FILETREE.md` after apply. The `apply` stdout
+- `cat` / `Read` the resulting manifest after apply. The `apply` stdout
   (`{"total_entries", "received", "applied", "added", "summaries_updated",
   "hashes_refreshed", "removed", "renamed"}`, plus optional `skipped_*` /
   `missing_from_manifest` keys) already confirms success; dumping

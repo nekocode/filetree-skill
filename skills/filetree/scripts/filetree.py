@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """filetree.py — deterministic operations for FILETREE.md maintenance."""
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -10,21 +12,12 @@ import sys
 import tempfile
 from pathlib import Path
 
-MANIFEST_PATH = Path('FILETREE.md')
-
-# Binary, asset and lock files — LLM summaries add no value here.
-SKIP_EXTENSIONS = {
-    '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.svg', '.bmp',
-    '.woff', '.woff2', '.ttf', '.otf', '.eot',
-    '.mp4', '.mp3', '.wav', '.ogg', '.webm',
-    '.zip', '.tar', '.gz', '.bz2', '.7z',
-    '.pdf', '.psd', '.ai',
-}
-SKIP_FILENAMES = {
-    'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml',
-    'Cargo.lock', 'poetry.lock', 'Pipfile.lock', 'go.sum',
-    'FILETREE.md',
-}
+from filetree_config import (
+    DEFAULT_MANIFEST_PATH,
+    Config,
+    filter_indexable,
+    load_config,
+)
 
 # Entry format: - `filename` — summary <!--hash:xxxxxxxx-->
 ENTRY_RE = re.compile(r'^- `([^`]+)` — (.+?) <!--hash:([a-f0-9]+)-->\s*$')
@@ -45,14 +38,12 @@ def require_git():
         )
 
 
-def should_skip(path: str) -> bool:
-    """Skip binary extensions and lock files."""
-    p = Path(path)
-    return p.suffix.lower() in SKIP_EXTENSIONS or p.name in SKIP_FILENAMES
-
-
-def list_current_files() -> list[str]:
-    """Tracked + untracked-unignored files, deduped and sorted."""
+def list_current_files(config: Config = None) -> list[str]:
+    """Tracked + untracked-unignored files, deduped, sorted, config-filtered."""
+    # `config` is optional only so unit tests can call this helper bare; production goes
+    # through cmd_todo / cmd_apply, the single load_config() entry points, which always
+    # pass config down. A bare call deliberately defaults to empty Config() (no disk read).
+    config = config or Config()
     # -z: NUL-delimited records, no quoting ambiguity for paths with spaces/newlines/non-ASCII.
     # core.quotePath=false: redundant under -z but kept as belt-and-braces and to match peer calls.
     # encoding='utf-8': pin decoding so a C/POSIX locale doesn't crash on multi-byte paths.
@@ -84,7 +75,9 @@ def list_current_files() -> list[str]:
         encoding='utf-8',
     ).split('\0'))
     all_files = (set(tracked) | set(untracked)) - deleted
-    return sorted(f for f in all_files if f and f not in gitlinks and not should_skip(f))
+    candidates = sorted(f for f in all_files if f and f not in gitlinks)
+    # filter_indexable preserves order, so the sorted input stays sorted.
+    return filter_indexable(candidates, config)
 
 
 def _read_symlink_bytes(path: str) -> bytes:
@@ -165,16 +158,23 @@ def detect_renames() -> list[tuple[str, str]]:
     return renames
 
 
-def compute_renames(manifest_by_path: dict) -> list[dict]:
+def compute_renames(manifest_by_path: dict, config: Config = None) -> list[dict]:
     """Rename pairs git detected, kept to manifest-known sources and indexable targets.
 
     Deterministic from repo state, so both `cmd_todo` and `cmd_apply` derive renames
     here rather than trusting an LLM-relayed payload — the agent never hand-carries them.
+    The target is run through the same config filter so a rename INTO an excluded path
+    correctly degrades to a removal.
     """
+    config = config or Config()
+    # No early-return for empty pairs: filter_indexable([]) short-circuits (match_gitignore
+    # returns on empty paths) and the comprehension over empty pairs yields [] anyway.
+    pairs = detect_renames()
+    indexable_new = set(filter_indexable([n for _o, n in pairs], config))
     return [
         {'old_path': o, 'new_path': n}
-        for o, n in detect_renames()
-        if o in manifest_by_path and not should_skip(n)
+        for o, n in pairs
+        if o in manifest_by_path and n in indexable_new
     ]
 
 
@@ -207,13 +207,14 @@ def _unquote_git_path(s: str) -> str:
     return raw.decode('utf-8', errors='replace')
 
 
-def parse_manifest() -> list[dict]:
-    """Read FILETREE.md into [{path, summary, hash}]."""
-    if not MANIFEST_PATH.exists():
+def parse_manifest(manifest_path: str = DEFAULT_MANIFEST_PATH) -> list[dict]:
+    """Read the manifest into [{path, summary, hash}]."""
+    mpath = Path(manifest_path)
+    if not mpath.exists():
         return []
     entries = []
     section = ''
-    for line in MANIFEST_PATH.read_text(encoding='utf-8').splitlines():
+    for line in mpath.read_text(encoding='utf-8').splitlines():
         m = SECTION_RE.match(line)
         if m:
             section = m.group(1).strip().rstrip('/')
@@ -239,8 +240,8 @@ def parse_manifest() -> list[dict]:
     return entries
 
 
-def write_manifest(entries: list[dict]) -> None:
-    """Group by directory, sort stably, write back to FILETREE.md."""
+def write_manifest(entries: list[dict], manifest_path: str = DEFAULT_MANIFEST_PATH) -> None:
+    """Group by directory, sort stably, write back to the manifest."""
     by_dir: dict[str, list[dict]] = {}
     for e in entries:
         d = str(Path(e['path']).parent)
@@ -267,15 +268,18 @@ def write_manifest(entries: list[dict]) -> None:
         lines.append('')
 
     # Atomic write: tmp + os.replace, so a crash mid-write can't truncate the manifest.
-    tmp = MANIFEST_PATH.with_name(MANIFEST_PATH.name + '.tmp')
+    mpath = Path(manifest_path)
+    # A relocated manifest (e.g. docs/FILETREE.md) needs its parent dir to exist.
+    mpath.parent.mkdir(parents=True, exist_ok=True)
+    tmp = mpath.with_name(mpath.name + '.tmp')
     tmp.write_text('\n'.join(lines), encoding='utf-8')
-    tmp.replace(MANIFEST_PATH)
+    tmp.replace(mpath)
 
 
 DEFAULT_BATCH_SIZE = 25
 
 
-def cmd_todo(batch_size: int = 0, split_dir: str = None) -> dict:
+def cmd_todo(batch_size: int = 0, split_dir: str = None, config: Config = None) -> dict:
     """Diff current files vs manifest; emit the LLM todo list.
 
     With `split_dir` set, the LLM work (added + changed) is chunked into
@@ -286,11 +290,12 @@ def cmd_todo(batch_size: int = 0, split_dir: str = None) -> dict:
     is the plain diff — the agent never improvises chunking or temp files.
     """
     require_git()
-    current_paths = set(list_current_files())
-    manifest = parse_manifest()
+    config = config or load_config()
+    current_paths = set(list_current_files(config))
+    manifest = parse_manifest(config.manifest_path)
     manifest_by_path = {e['path']: e for e in manifest}
 
-    renames = compute_renames(manifest_by_path)
+    renames = compute_renames(manifest_by_path, config)
     renamed_olds = {r['old_path'] for r in renames}
     renamed_news = {r['new_path'] for r in renames}
 
@@ -327,10 +332,20 @@ def cmd_todo(batch_size: int = 0, split_dir: str = None) -> dict:
         'changed': changed,
         'removed': removed,
         'renamed': renames,
+        # Whether the manifest file exists on disk. Lets /filetree:update tell
+        # "no manifest yet → run /filetree:init" apart from a present-but-empty
+        # manifest (both have total_in_manifest == 0), without guessing.
+        'manifest_exists': Path(config.manifest_path).exists(),
         'stats': {
             'total_in_repo': len(current_paths),
             'total_in_manifest': len(manifest_by_path),
             'need_llm': len(added) + len(changed),
+        },
+        # Surfaced so the command reads manifest_path / language from here (DRY):
+        # the script is the single config parser, the command never re-reads it.
+        'config': {
+            'manifest_path': config.manifest_path,
+            'language': config.language,
         },
     }
 
@@ -366,7 +381,7 @@ def merge_payloads(payloads: list[dict]) -> dict:
     return {'updates': list(updates_by_path.values())}
 
 
-def cmd_apply(updates_json: str) -> dict:
+def cmd_apply(updates_json: str, config: Config = None) -> dict:
     """Apply LLM summaries to the manifest. UNCHANGED refreshes hash only.
 
     The payload carries only `{updates: [{path, summary}]}`:
@@ -376,13 +391,14 @@ def cmd_apply(updates_json: str) -> dict:
       agent — they're deterministic, so carrying them through the LLM was pure churn.
     """
     require_git()
+    config = config or load_config()
     updates = json.loads(updates_json).get('updates', [])
-    current_paths = set(list_current_files())
-    manifest = parse_manifest()
+    current_paths = set(list_current_files(config))
+    manifest = parse_manifest(config.manifest_path)
     by_path = {e['path']: e for e in manifest}
 
     # Recompute the deterministic edits from repo state.
-    renames = compute_renames(by_path)
+    renames = compute_renames(by_path, config)
     renamed_olds = {r['old_path'] for r in renames}
     removed = sorted(set(by_path) - current_paths - renamed_olds)
     # Old paths retired in this call. A stale `updates` entry for one of these is
@@ -415,17 +431,24 @@ def cmd_apply(updates_json: str) -> dict:
     added = 0
     summaries_updated = 0
     hashes_refreshed = 0
-    skipped_missing_path = []      # path not tracked by git and not retired here (hallucinated)
+    skipped_missing_path = []      # path absent from disk and not retired here (hallucinated)
+    skipped_excluded = []          # real file on disk, dropped by config.exclude / built-in skip
     skipped_unchanged_new = []     # UNCHANGED sentinel for a tracked file with no prior entry
 
     for u in updates:
         p = u['path']
         s = u['summary']
-        # Path no longer tracked by git. If it was retired (renamed/removed) in this same
-        # call, the stale entry is benign — drop it quietly. Otherwise it's hallucinated:
-        # LLMs sometimes emit entries for nonexistent files. Surface those.
+        # Path not in the indexable set. Three cases, distinguished so the caller gets an
+        # accurate diagnostic instead of crying "hallucination" at a real file:
+        #   retired here (renamed/removed) → benign stale entry, drop quietly
+        #   still on disk → real file dropped by config.exclude / built-in skip, not a bug
+        #   absent from disk → genuinely hallucinated; surface it
         if p not in current_paths:
-            if p not in retired_paths:
+            if p in retired_paths:
+                pass
+            elif Path(p).exists():
+                skipped_excluded.append(p)
+            else:
                 skipped_missing_path.append(p)
             continue
         h = disk_hashes[p]
@@ -447,7 +470,7 @@ def cmd_apply(updates_json: str) -> dict:
                 added += 1
             by_path[p] = {'path': p, 'hash': h, 'summary': s}
 
-    write_manifest(list(by_path.values()))
+    write_manifest(list(by_path.values()), config.manifest_path)
 
     # Coverage gap: any indexable file still missing from the manifest after apply.
     # A dropped sub-agent output or a forgotten summary lands here, so the caller can
@@ -465,6 +488,8 @@ def cmd_apply(updates_json: str) -> dict:
     }
     if skipped_unchanged_new:
         result['skipped_unchanged_new'] = skipped_unchanged_new
+    if skipped_excluded:
+        result['skipped_excluded'] = skipped_excluded
     if skipped_missing_path:
         result['skipped_missing_path'] = skipped_missing_path
     if missing_from_manifest:
@@ -473,19 +498,30 @@ def cmd_apply(updates_json: str) -> dict:
 
 
 WIRE_FILES = ('CLAUDE.md', 'AGENTS.md')
-FILETREE_REF_RE = re.compile(r'FILETREE\.md', re.IGNORECASE)
 
 
 def cmd_wire_target() -> dict:
-    """Resolve where to wire the FILETREE.md reference for CLAUDE.md / AGENTS.md.
+    """Resolve where to wire the manifest reference for CLAUDE.md / AGENTS.md.
 
     These are commonly symlinks (e.g. → .ai/rules.md); editing the link path fails
     with 'refusing to write through symlink'. The script resolves the real target and
-    surfaces any existing FILETREE.md mention, so the agent edits the right file once
+    surfaces any existing manifest mention, so the agent edits the right file once
     instead of reading, hitting the symlink wall, then probing with readlink itself.
+
+    `manifest_path` + `manifest_exists` are surfaced too so the agent wires the configured
+    path (not a hardcoded FILETREE.md) and knows whether the manifest already exists without
+    a separate stat. `matches` is searched for the configured manifest path.
     """
     require_git()
-    out = {}
+    config = load_config()
+    # Match the FULL configured path, not just the basename: a bare-basename regex yields
+    # false "already wired" hits when manifest_path has a common name (e.g. docs/index.md
+    # would match an unrelated `index.md` mention). 'FILETREE.md' (default) is unchanged.
+    ref_re = re.compile(re.escape(config.manifest_path), re.IGNORECASE)
+    out = {
+        'manifest_path': config.manifest_path,
+        'manifest_exists': Path(config.manifest_path).exists(),
+    }
     for name in WIRE_FILES:
         p = Path(name)
         if not p.exists():  # follows the link; a dangling symlink counts as absent here
@@ -498,10 +534,10 @@ def cmd_wire_target() -> dict:
             'is_symlink': p.is_symlink(),
             # Absolute real path — the agent must Edit THIS, never the link name.
             'real_path': os.path.realpath(name),
-            # Lines mentioning FILETREE.md, so the agent can judge "already wired?"
+            # Lines mentioning the manifest, so the agent can judge "already wired?"
             # without re-reading (a backticked path / link = wired; prose / a
             # "do not edit" warning = not a real reference).
-            'matches': [ln for ln in text.splitlines() if FILETREE_REF_RE.search(ln)],
+            'matches': [ln for ln in text.splitlines() if ref_re.search(ln)],
         }
     return out
 

@@ -1,8 +1,11 @@
 """Unit + integration tests for filetree.py.
 
 Coverage:
-- Pure functions: should_skip, parse_manifest, write_manifest, round-trip.
+- Pure functions: parse_manifest, write_manifest, round-trip.
 - Integration: tmpdir + git init, end-to-end cmd_todo → cmd_apply.
+
+filetree_config.py (skip rules, .filetree.json, gitignore filter) is covered
+separately in test_filetree_config.py.
 """
 
 import json
@@ -17,26 +20,6 @@ import filetree
 
 
 # ===== Pure-function unit tests =====
-
-
-class TestShouldSkip:
-    def test_binary_extensions(self):
-        assert filetree.should_skip('logo.png')
-        assert filetree.should_skip('font.woff2')
-        assert filetree.should_skip('demo.MP4')  # Case-insensitive.
-
-    def test_lock_files(self):
-        assert filetree.should_skip('package-lock.json')
-        assert filetree.should_skip('poetry.lock')
-        assert filetree.should_skip('a/b/yarn.lock')  # Skipped in subdirectories too.
-
-    def test_manifest_itself(self):
-        assert filetree.should_skip('FILETREE.md')
-
-    def test_normal_code_files(self):
-        assert not filetree.should_skip('src/auth.py')
-        assert not filetree.should_skip('README.md')
-        assert not filetree.should_skip('Makefile')
 
 
 class TestParseManifest:
@@ -124,29 +107,6 @@ class TestWriteManifest:
 
 
 # ===== Integration tests: real git repository =====
-
-
-@pytest.fixture
-def git_repo(tmp_path, monkeypatch):
-    """Empty git repo + chdir, fully isolated from host gitconfig.
-
-    Host ~/.gitconfig must not leak in: a developer who set
-    `core.quotePath=false` globally would otherwise see the new regression
-    test pass even after the fix is reverted.
-    """
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv('GIT_AUTHOR_NAME', 'test')
-    monkeypatch.setenv('GIT_AUTHOR_EMAIL', 'test@test')
-    monkeypatch.setenv('GIT_COMMITTER_NAME', 'test')
-    monkeypatch.setenv('GIT_COMMITTER_EMAIL', 'test@test')
-    # /dev/null sidesteps having to place a file (anywhere inside tmp_path leaks
-    # into the repo; anywhere outside leaks across tests). POSIX-only — fine here.
-    monkeypatch.setenv('GIT_CONFIG_GLOBAL', '/dev/null')
-    monkeypatch.setenv('GIT_CONFIG_SYSTEM', '/dev/null')
-    monkeypatch.delenv('GIT_CONFIG_COUNT', raising=False)
-    monkeypatch.delenv('XDG_CONFIG_HOME', raising=False)
-    subprocess.run(['git', 'init', '-q'], check=True, cwd=tmp_path)
-    return tmp_path
 
 
 class TestIntegration:
@@ -596,7 +556,6 @@ class TestApplyRecomputesEdits:
         Path('a.py').write_text('shared content here\n')
         subprocess.run(['git', 'add', 'a.py'], check=True)
         subprocess.run(['git', 'commit', '-q', '-m', 'init'], check=True)
-        todo = filetree.cmd_todo()
         filetree.cmd_apply(json.dumps({'updates': [
             {'path': 'a.py', 'summary': '原始文件'}
         ]}))
@@ -945,3 +904,107 @@ class TestEdgeCases:
         assert 'CLAUDE.md' not in added_paths
         # .gitignore itself, on the other hand, IS tracked-by-untracked-unignored.
         assert '.gitignore' in added_paths
+
+
+
+
+class TestConfigIntegration:
+    """End-to-end: .filetree.json reshapes todo/apply/wire behavior."""
+
+    def test_custom_manifest_path_round_trip(self, git_repo):
+        Path('a.py').write_text('x\n')
+        Path('.filetree.json').write_text(json.dumps({'manifest_path': 'docs/TREE.md'}),
+                                          encoding='utf-8')
+        todo = filetree.cmd_todo()
+        assert todo['config']['manifest_path'] == 'docs/TREE.md'
+
+        filetree.cmd_apply(json.dumps({'updates': [{'path': 'a.py', 'summary': 's'}]}))
+        assert Path('docs/TREE.md').exists()
+        assert not Path('FILETREE.md').exists()
+        manifest = filetree.parse_manifest('docs/TREE.md')
+        assert {e['path'] for e in manifest} == {'a.py'}
+
+    def test_exclude_filters_todo_and_apply(self, git_repo):
+        Path('a.py').write_text('x\n')
+        Path('gen').mkdir()
+        Path('gen/b.ts').write_text('y\n')
+        Path('.filetree.json').write_text(json.dumps({'exclude': ['gen/']}),
+                                          encoding='utf-8')
+        added = {a['path'] for a in filetree.cmd_todo()['added']}
+        assert 'a.py' in added
+        assert 'gen/b.ts' not in added
+
+    def test_include_rescues_svg_in_todo(self, git_repo):
+        Path('logo.svg').write_text('<svg/>\n')
+        Path('.filetree.json').write_text(json.dumps({'include': ['*.svg']}),
+                                          encoding='utf-8')
+        added = {a['path'] for a in filetree.cmd_todo()['added']}
+        assert 'logo.svg' in added
+
+    def test_language_surfaced_in_todo(self, git_repo):
+        Path('a.py').write_text('x\n')
+        Path('.filetree.json').write_text(json.dumps({'language': 'zh'}), encoding='utf-8')
+        assert filetree.cmd_todo()['config']['language'] == 'zh'
+
+    def test_rename_into_excluded_path_degrades_to_removal(self, git_repo):
+        Path('a.py').write_text('shared content here\n')
+        subprocess.run(['git', 'add', 'a.py'], check=True)
+        subprocess.run(['git', 'commit', '-q', '-m', 'init'], check=True)
+        filetree.cmd_apply(json.dumps({'updates': [{'path': 'a.py', 'summary': 'orig'}]}))
+
+        Path('.filetree.json').write_text(json.dumps({'exclude': ['b.py']}),
+                                          encoding='utf-8')
+        subprocess.run(['git', 'mv', 'a.py', 'b.py'], check=True)
+        todo = filetree.cmd_todo()
+        assert todo['renamed'] == []        # b.py is excluded, so no rename pair
+        assert 'a.py' in todo['removed']     # the old path is dropped instead
+
+    def test_wire_target_surfaces_custom_manifest_path(self, git_repo):
+        Path('.filetree.json').write_text(json.dumps({'manifest_path': 'TREE.md'}),
+                                          encoding='utf-8')
+        Path('CLAUDE.md').write_text(
+            '# Rules\n\n## References\n\n- `./TREE.md` — index\n', encoding='utf-8')
+        out = filetree.cmd_wire_target()
+        assert out['manifest_path'] == 'TREE.md'
+        assert any('TREE.md' in m for m in out['CLAUDE.md']['matches'])
+
+    def test_manifest_exists_surfaced_in_todo(self, git_repo):
+        Path('a.py').write_text('x\n')
+        assert filetree.cmd_todo()['manifest_exists'] is False
+        filetree.cmd_apply(json.dumps({'updates': [{'path': 'a.py', 'summary': 's'}]}))
+        assert filetree.cmd_todo()['manifest_exists'] is True
+
+    def test_excluded_file_reported_as_skipped_excluded(self, git_repo):
+        # A real file on disk that config.exclude removed must read as skipped_excluded,
+        # not skipped_missing_path (whose contract is "hallucinated nonexistent file").
+        Path('a.py').write_text('x\n')
+        Path('gen.ts').write_text('y\n')
+        Path('.filetree.json').write_text(json.dumps({'exclude': ['gen.ts']}),
+                                          encoding='utf-8')
+        res = filetree.cmd_apply(json.dumps({'updates': [
+            {'path': 'a.py', 'summary': 's'},
+            {'path': 'gen.ts', 'summary': 'stale'},
+        ]}))
+        assert res.get('skipped_excluded') == ['gen.ts']
+        assert 'gen.ts' not in res.get('skipped_missing_path', [])
+
+    def test_hallucinated_file_still_skipped_missing(self, git_repo):
+        Path('a.py').write_text('x\n')
+        res = filetree.cmd_apply(json.dumps({'updates': [
+            {'path': 'a.py', 'summary': 's'},
+            {'path': 'ghost.py', 'summary': 'nope'},
+        ]}))
+        assert res.get('skipped_missing_path') == ['ghost.py']
+        assert 'skipped_excluded' not in res
+
+    def test_wire_target_matches_full_path_not_basename(self, git_repo):
+        # A custom manifest with a common name must not false-positive on an unrelated
+        # mention of a same-basename file elsewhere.
+        Path('.filetree.json').write_text(json.dumps({'manifest_path': 'docs/index.md'}),
+                                          encoding='utf-8')
+        Path('CLAUDE.md').write_text(
+            '# Rules\n\n- see `src/index.md` for routing\n', encoding='utf-8')
+        out = filetree.cmd_wire_target()
+        assert out['manifest_path'] == 'docs/index.md'
+        assert out['manifest_exists'] is False
+        assert out['CLAUDE.md']['matches'] == []  # src/index.md is NOT docs/index.md

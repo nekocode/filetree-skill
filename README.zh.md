@@ -45,7 +45,7 @@ claude --plugin-dir .
 
 ## 接入 CLAUDE.md / AGENTS.md
 
-`/filetree:init` 首次执行时会顺手做 —— 扫 repo 根的 `CLAUDE.md` / `AGENTS.md`，已经引用 `FILETREE.md` 的跳过，剩下的按文件原有结构提议一条引用 bullet（位置和 bullet 风格自适应），每次落盘前你都先确认。**wire 先于 hash**，post-wire 内容直接进 manifest，无需二次刷新。
+`/filetree:init` 首次执行时会顺手做 —— 扫 repo 根的 `CLAUDE.md` / `AGENTS.md`，已经引用 `FILETREE.md` 的跳过，剩下的按文件原有结构提议一条引用 bullet（位置和 bullet 风格自适应），每次落盘前你都先确认。
 
 注意事项：
 
@@ -60,9 +60,29 @@ claude --plugin-dir .
 
 Agent 就会把 `FILETREE.md` 当索引读 —— 一次读取，省掉摸索阶段几十次 `ls` / `grep` / `cat`。
 
-## 工作原理
+## 项目配置（`.filetree.json`）
 
-### Manifest 格式
+可选。仓库根放一个 `.filetree.json`，纳入 git 团队共享。缺省 → 走默认。
+
+```json
+{
+  "manifest_path": "docs/FILETREE.md",
+  "exclude": ["migrations/", "**/*.gen.ts", "/build"],
+  "include": ["*.svg"],
+  "language": "zh"
+}
+```
+
+| key | 作用 | 默认 |
+|---|---|---|
+| `manifest_path` | manifest 落盘路径（仓库内相对路径） | `FILETREE.md` |
+| `exclude` | gitignore 风格模式，把已跟踪文件移出 manifest | `[]` |
+| `include` | gitignore 风格模式，索引默认会跳过的文件（如 `*.svg`） | `[]` |
+| `language` | pin summary 语言（如 `"zh"`），不走自动探测 | `null` |
+
+`exclude` / `include` 支持完整 gitignore 语法（`/build`、`**`、`!keep.gen.ts`、目录尾斜杠）。配置非法立即报错。
+
+## Manifest 格式
 
 ```markdown
 # Project Filetree
@@ -79,34 +99,9 @@ _Auto-maintained by `/filetree:update`. Each entry carries a content hash; misma
 - `README.md` — 项目入口说明 <!--hash:9a8b7c6d-->
 ```
 
-- 二级标题 = 目录路径（末尾带 `/`）；根目录文件归 `(root)/`
-- 每条只写文件名（不含全路径）+ 摘要 + 8 字符 content hash（来自 `git hash-object`）
-- 稳定排序（section + 条目）→ 无假 diff
-
-### 数据流（`/filetree:update`）
-
-```
-filetree.py todo
-  ├─ git ls-files（已跟踪 + 未跟踪未忽略）
-  ├─ git hash-object 批算所有路径
-  ├─ git status --porcelain（rename 检测，信任 git 50% 启发式）
-  └─ 对比当前 FILETREE.md
-        ↓ JSON
-{added, changed, removed, renamed, stats.need_llm}
-        ↓
-LLM 处理 added（写新摘要）
-            changed（输出 UNCHANGED 或新摘要）
-        ↓ JSON via stdin
-filetree.py apply
-  ├─ UNCHANGED → 仅刷新 hash，保留旧 summary
-  ├─ 新 summary → 整条覆盖
-  ├─ rename → 搬条目并重算 hash
-  └─ 写回 FILETREE.md
-```
-
-### UNCHANGED bias
-
-健康的 update 中，**80%+ 的 `changed` 项目应输出 `"UNCHANGED"`** —— refactor、格式化、改注释、修 bug、小补充，几乎不改文件 purpose。LLM 回 4 字节 `"UNCHANGED"`；`apply` 只刷新 hash 保留旧摘要。Manifest 自身承担「我已审过这个版本」的记忆 —— 不需要独立 cache。
+- 二级标题 = 目录路径；根目录文件归 `(root)/`
+- 每条：文件名 + 摘要 + 8 字符 content hash
+- 稳定排序 → 无假 diff
 
 ## 兼容性
 
@@ -143,16 +138,6 @@ python skills/filetree/scripts/filetree.py lint
 # .github/workflows/filetree.yml
 - run: python skills/filetree/scripts/filetree.py lint
 ```
-
-## 非目标
-
-显式划定不做的事，防止 scope 蔓延：
-
-- 不做函数 / 类 / hunk 级别变更追踪（粒度到文件即止）
-- 不做语义搜索 / 向量索引
-- 不跑 watcher / daemon / 后台进程
-- 不自动 commit（review 权力留给人）
-- 不做文件间依赖图（不是 call graph）
 
 ## 协议
 

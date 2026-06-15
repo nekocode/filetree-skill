@@ -20,6 +20,7 @@ venv/
 .env
 
 # Misc
+.DS_Store
 *.local.md
 /findings.md
 /progress.md

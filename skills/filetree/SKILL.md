@@ -38,11 +38,13 @@ and the manifest ends up mixing Chinese and English.
 
 The command resolves the canonical language ONCE, up front, by this priority:
 
-1. The dominant natural language of `CLAUDE.md` / `AGENTS.md` (the agent
+0. `config.language` from the `todo` output (set when `.filetree.json` pins
+   `language`). When present it is authoritative — skip the rest of the chain.
+1. Else the dominant natural language of `CLAUDE.md` / `AGENTS.md` (the agent
    contract — most authoritative).
 2. Else `README` (any localized variant).
-3. Else (`/filetree:update` only) the dominant language of existing
-   FILETREE.md entries.
+3. Else (`/filetree:update` only) the dominant language of existing manifest
+   entries.
 4. Else English.
 
 Then it passes that one language verbatim into EVERY sub-agent prompt
@@ -68,7 +70,10 @@ still fits wastes ~100x more tokens than a 4-byte `"UNCHANGED"` reply.
 
 **Decision rule.** You have: old summary, old hash, new hash, and the file's
 new content (prefer reading the `git diff` over the full file — diff is far
-denser per token and is all you need for purpose-level judgement).
+denser per token and is all you need for purpose-level judgement). If the diff
+comes back EMPTY (the change was already committed, so working tree == HEAD),
+fall back to reading the file — the hash moved, so judging purpose from a blank
+diff would falsely yield UNCHANGED.
 
 Output `"UNCHANGED"` if the old summary still describes the file's PURPOSE.
 Refactors, renames, bug fixes, test additions, formatting, comment changes,
@@ -127,9 +132,20 @@ files, so you never count, truncate, or hand-split). Output:
 
 ```json
 { "stats": {...}, "removed": [...], "renamed": [...],
+  "manifest_exists": true,
+  "config": {"manifest_path": "FILETREE.md", "language": null},
   "split_dir": "/tmp/filetree_XXXX",
   "batches": [{"file": ".../batch_00.json", "count": 25}, ...] }
 ```
+
+The `config` block reflects `.filetree.json` (the script is the only config
+parser — never re-read the file yourself). `manifest_path` is where the manifest
+lives (may be renamed / relocated); `language` pins the summary language (see
+"Summary language" priority 0). `exclude` / `include` filtering is already applied
+inside the script, so the work plan only lists files that belong in the manifest.
+`manifest_exists` is whether the manifest file is already on disk — `/filetree:update`
+uses it to detect a not-yet-initialized repo (a present-but-empty manifest also reads
+`total_in_manifest: 0`, so the boolean is the reliable signal).
 
 Each `batch_NN.json` is a JSON array of todo items (added + changed). Drive it
 purely off `batches`:
@@ -166,12 +182,15 @@ python .../filetree.py apply <split_dir>/part_*.json
 Before claiming the manifest is synced, run this gate on `apply`'s return:
 
 1. READ `missing_from_manifest` — any indexable file still without an entry
-   (a dropped sub-agent output, a forgotten file).
-2. READ the anomaly keys: `applied < received`, `skipped_unchanged_new`,
-   `skipped_missing_path`.
-3. If any are non-empty → summarize those files into one more part and re-run
-   `apply` (it merges). Loop until every key is absent/clean.
-4. ONLY THEN report — straight from `apply`'s return.
+   (a dropped sub-agent output, a forgotten file). This is the completion gate.
+2. READ the fixable anomaly keys: `skipped_unchanged_new` (a wrong `UNCHANGED`),
+   `skipped_missing_path` (a hallucinated path).
+3. If 1 or 2 are non-empty → summarize those files into one more part and re-run
+   `apply` (it merges). Loop until both clear.
+4. IGNORE `skipped_excluded` — real files the config keeps out, nothing to fix.
+   Do NOT gate on `applied == received`: a legitimate `skipped_excluded` makes
+   `applied < received` hold forever, which would loop here.
+5. ONLY THEN report — straight from `apply`'s return.
 
 Never hand-roll a coverage diff (concatenating batch lists, comparing counts):
 it is redundant and error-prone. The script's keys are the only evidence.

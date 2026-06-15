@@ -12,38 +12,69 @@ internalize for future `/filetree:update` calls), and parallelization strategy.
 
 Conduct this whole command — your own narration AND every summary — in the
 project's canonical language. Resolve it ONCE per SKILL.md "Summary language"
-(don't restate the chain here). Its first source is `CLAUDE.md` / `AGENTS.md`:
-step 2 opens them only on the wire path — reuse that content if it did, else
-read now.
+(don't restate the chain here) — `config.language` from step 3's `todo` output
+wins when set. Its next source is `CLAUDE.md` / `AGENTS.md`: step 2 opens them
+only on the wire path — reuse that content if it did, else read now.
+
+The manifest path is configurable via `.filetree.json`. The script is the only
+config parser: take `manifest_path` from the `wire-target` / `todo` output below
+and use it everywhere this doc says "the manifest" — never assume `FILETREE.md`,
+never re-parse `.filetree.json` yourself.
 
 ## Steps
 
-1. **Check existing.** If `FILETREE.md` exists in the repo root, ask the user
-   to confirm overwrite (they likely meant `/filetree:update`); on decline,
-   stop — do not enter step 2. Skip the prompt if absent.
+1. **Offer config, resolve targets, check existing.** Config comes first because it
+   decides where the manifest goes and what gets indexed — it must be settled before
+   anything is built.
+
+   a. **Create the config, then confirm.** If `.filetree.json` does NOT exist, `Write`
+      the default template below (it equals current defaults, so it changes nothing
+      yet). Then use `AskUserQuestion` to ask whether to keep it. **That open prompt is
+      the user's edit window** — while it waits, they can edit the file now on disk
+      (relocate the manifest, add `exclude` / `include`, pin a `language`), and
+      `wire-target` / `todo` below will pick up whatever they save. On **keep**,
+      proceed. On **discard**, delete the file you just created
+      (`python -c "import os; os.remove('.filetree.json')"`) and proceed with defaults.
+      If `.filetree.json` ALREADY exists, do nothing here — never create, edit, or
+      remove a pre-existing one (it's the user's, and may already be customized).
+      ```json
+      {
+        "manifest_path": "FILETREE.md",
+        "exclude": [],
+        "include": [],
+        "language": null
+      }
+      ```
+
+   b. Then run `wire-target` — it returns the configured `manifest_path`,
+      `manifest_exists`, and for each of `CLAUDE.md` / `AGENTS.md`
+      `{exists, is_symlink, real_path, matches}`:
+      ```bash
+      python "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" wire-target
+      ```
+      If `manifest_exists` is `true`, ask the user to confirm overwrite (they likely
+      meant `/filetree:update`); on decline, stop — do not enter step 2. Skip the
+      prompt when `false`.
 
 2. **Wire `CLAUDE.md` / `AGENTS.md`.** Do this **before** `todo` so the
    manifest captures the post-wire hash; otherwise the first `/filetree:lint`
-   flags the wired file as drifted.
-
-   First resolve the real targets — these files are often symlinks (e.g.
-   → `.ai/rules.md`), and editing the link path fails:
-   ```bash
-   python "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" wire-target
-   ```
-   For each of `CLAUDE.md` / `AGENTS.md` it returns `{exists, is_symlink,
-   real_path, matches}`. Then per file:
+   flags the wired file as drifted. Reuse the `wire-target` output from step 1
+   (these files are often symlinks → editing the link path fails, so always edit
+   `real_path`). Then per file:
 
    a. **`exists: false`** → skip; do not create.
-   b. **Already wired.** `matches` lists every line mentioning FILETREE.md.
-      Skip if one is a real reference — a backticked path, link, or bullet.
-      Bare prose and negative warnings (`do not edit FILETREE.md`) do NOT count.
+   b. **Already wired.** `matches` lists every line mentioning the manifest (the
+      script searched for the configured `manifest_path` name). Skip if one is a
+      real reference — a backticked path, link, or bullet. Bare prose and negative
+      warnings (`do not edit ...`) do NOT count.
    c. **Otherwise propose an edit to `real_path`** (NEVER the link name — Edit
-      refuses to write through a symlink). Read `real_path` in full. If a section's
-      bullets are `./*.md` paths (`## References`, `## 引用`, `## Documentation`,
-      `## Project layout`), append a matching bullet there; else append a short
-      new section at end. Match the file's language and bullet style (full-width
-      `——` in zh files). Convey: read before `ls` / `grep` for the per-file index.
+      refuses to write through a symlink). Read `real_path` in full. The bullet
+      must reference the configured `manifest_path` (not a hardcoded FILETREE.md).
+      If a section's bullets are `./*.md` paths (`## References`, `## 引用`,
+      `## Documentation`, `## Project layout`), append a matching bullet there;
+      else append a short new section at end. Match the file's language and bullet
+      style (full-width `——` in zh files). Convey: read before `ls` / `grep` for
+      the per-file index.
    d. **Confirm via `AskUserQuestion`** before writing. Put the old → new diff in
       the `question` body or a `preview`. On decline, skip — do not retry. `Edit`
       `real_path` (use `Write` only on a zero-byte file).
@@ -58,10 +89,14 @@ read now.
    ```bash
    python "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" todo --split
    ```
-   With no existing manifest, every tracked file lands in `added` (split across
-   `batches`). A wired `CLAUDE.md` / `AGENTS.md` shows up with its post-wire hash.
-   (A gitignored one won't appear — wiring still works on disk, but the manifest
-   only tracks files git sees.)
+   With no existing manifest, every tracked file is new work, written into the
+   `batches` files (the full `added` / `changed` lists are omitted from `--split`
+   stdout — drive off `batches`). The output also carries the `config` block
+   (`manifest_path`, `language`) — use `config.language` for the canonical language if
+   set. A wired
+   `CLAUDE.md` / `AGENTS.md` shows up with its post-wire hash. (A gitignored one
+   won't appear — wiring still works on disk, but the manifest only tracks files
+   git sees. `exclude`/`include` from `.filetree.json` are already applied.)
 
 4. **Write summaries.** Process the batches per SKILL.md "Processing the work
    plan" (0 → skip to apply; 1 → inline; many → one `claude-haiku-4-5` sub-agent
@@ -96,18 +131,20 @@ read now.
    yields 0 batches — there are no part files to glob; pipe `{"updates": []}` via
    stdin instead.)
 
-6. **Verify coverage, then report.** Inspect `apply`'s return: if
-   `missing_from_manifest` is non-empty (a sub-agent dropped a file), or
-   `applied < received` / `skipped_unchanged_new` / `skipped_missing_path`
-   appears, those files did NOT land — summarize them (no `UNCHANGED`) and
-   re-run `apply` (it merges) until `missing_from_manifest` is gone and
-   `applied == received`. Then report: total files indexed, files skipped
-   (binary / lock), wired files (and skipped with reason: absent /
-   already-wired / declined), time taken.
+6. **Verify coverage, then report.** The completion gate is `missing_from_manifest`
+   being empty (an indexable file with no entry — a sub-agent dropped it). If it's
+   non-empty, summarize those files (no `UNCHANGED`) and re-run `apply` (it merges)
+   until it clears. `skipped_unchanged_new` / `skipped_missing_path` flag bad
+   summaries (a wrong `UNCHANGED`, or a hallucinated path) — fix and re-apply those.
+   Ignore `skipped_excluded` (real files the config keeps out — nothing to fix; do
+   NOT loop on `applied == received`, which these legitimately hold below). Then
+   report: total files indexed, files skipped (binary / lock / excluded), wired files
+   (and skipped with reason: absent / already-wired / declined), time taken.
 
 ## Do not
 
-- Commit. User reviews `FILETREE.md` and commits manually.
+- Commit. User reviews the manifest and commits manually.
+- Touch a pre-existing `.filetree.json` — create (and offer to discard) the scaffold only when none exists.
 - Write summaries for files in `should_skip` — the script already filters them.
 - Create `CLAUDE.md` or `AGENTS.md` if neither exists — that's the user's call.
 - Proceed to step 2 if the user declined the overwrite in step 1.

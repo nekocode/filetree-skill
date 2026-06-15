@@ -45,7 +45,7 @@ All commands refuse to commit `FILETREE.md`. You review the diff and commit your
 
 ## Wire it into CLAUDE.md / AGENTS.md
 
-`/filetree:init` handles this on first run — it scans the repo root for `CLAUDE.md` / `AGENTS.md`, skips files already referencing `FILETREE.md`, and for the rest proposes a bullet whose location and style matches the existing file. You confirm each edit before it lands. Because wiring runs **before** the manifest is hashed, the post-wire content is what enters `FILETREE.md` directly — no second-pass refresh.
+`/filetree:init` handles this on first run — it scans the repo root for `CLAUDE.md` / `AGENTS.md`, skips files already referencing `FILETREE.md`, and for the rest proposes a bullet whose location and style matches the existing file. You confirm each edit before it lands.
 
 Caveats:
 
@@ -60,9 +60,29 @@ To wire by hand, drop a line like this into your `CLAUDE.md`:
 
 The agent then treats `FILETREE.md` as a cheap index — one read replaces dozens of `ls` / `grep` / `cat` calls during orientation.
 
-## How It Works
+## Project config (`.filetree.json`)
 
-### Manifest format
+Optional. Drop a `.filetree.json` at the repo root and commit it to share with the team. Absent → defaults.
+
+```json
+{
+  "manifest_path": "docs/FILETREE.md",
+  "exclude": ["migrations/", "**/*.gen.ts", "/build"],
+  "include": ["*.svg"],
+  "language": "zh"
+}
+```
+
+| Key | Effect | Default |
+|---|---|---|
+| `manifest_path` | Where the manifest is written (relative path inside the repo) | `FILETREE.md` |
+| `exclude` | gitignore-style patterns to keep tracked files OUT of the manifest | `[]` |
+| `include` | gitignore-style patterns to index files normally skipped (e.g. `*.svg`) | `[]` |
+| `language` | Pin the summary language (e.g. `"zh"`) instead of auto-detecting | `null` |
+
+`exclude` / `include` accept full gitignore syntax (`/build`, `**`, `!keep.gen.ts`, trailing-slash dirs). Invalid config fails fast with a clear error.
+
+## Manifest format
 
 ```markdown
 # Project Filetree
@@ -79,34 +99,9 @@ _Auto-maintained by `/filetree:update`. Each entry carries a content hash; misma
 - `README.md` — Project entry doc <!--hash:9a8b7c6d-->
 ```
 
-- Section header = directory path (trailing `/`); root files live under `(root)/`
-- Each entry stores filename only (not the full path) + summary + 8-char content hash (from `git hash-object`)
-- Stable sort (sections + entries) → no spurious diffs
-
-### Data flow (`/filetree:update`)
-
-```
-filetree.py todo
-  ├─ git ls-files (tracked + untracked, exclude .gitignore)
-  ├─ git hash-object on all paths
-  ├─ git status --porcelain  (rename detection, trust git 50% heuristic)
-  └─ diff vs current FILETREE.md
-        ↓ JSON
-{added, changed, removed, renamed, stats.need_llm}
-        ↓
-LLM processes added (write fresh summary)
-            changed (UNCHANGED or new summary)
-        ↓ JSON via stdin
-filetree.py apply
-  ├─ UNCHANGED → refresh hash only, keep summary
-  ├─ new summary → overwrite entry
-  ├─ rename → move entry + rehash
-  └─ write FILETREE.md
-```
-
-### UNCHANGED bias
-
-On a healthy `update`, **80%+ of `changed` items should resolve to `"UNCHANGED"`** — refactors, formatting, comment edits, bug fixes, small additions almost always leave a file's purpose intact. The LLM emits a 4-byte `"UNCHANGED"` reply; `apply` refreshes the hash and keeps the old summary. The manifest itself carries the memory of "I already reviewed this version" — no separate cache needed.
+- Section header = directory path; root files under `(root)/`
+- Each entry: filename + summary + 8-char content hash
+- Stable sort → no spurious diffs
 
 ## Compatibility
 
@@ -143,16 +138,6 @@ Exit code 1 = drift, 0 = clean. Wire it into pre-commit or CI as needed:
 # .github/workflows/filetree.yml
 - run: python skills/filetree/scripts/filetree.py lint
 ```
-
-## Non-Goals
-
-To prevent scope creep — filetree explicitly **does not**:
-
-- Track function / class / hunk-level changes (file-level is the resolution)
-- Build a semantic search or vector index
-- Run a watcher / daemon / background process
-- Auto-commit (review power stays with you)
-- Map dependencies between files (not a call graph)
 
 ## License
 
