@@ -32,17 +32,29 @@ DIR_RE = re.compile(r'^(?P<indent>(?:  )*)- (?P<name>(?!`).+?)\s*$')
 
 
 def require_git():
-    """Require a git repository; all change detection depends on git."""
+    """Require a git repository AND chdir to its root; all paths depend on both.
+
+    Claude Code often runs from a subdirectory. Left alone, `git ls-files` would
+    scope to that subdir and emit subdir-relative paths, while the relative
+    manifest_path / .filetree.json would resolve against the subdir too — silently
+    producing a second, range-truncated FILETREE.md instead of the repo-root one.
+    Normalizing to `--show-toplevel` here, the single universal entry guard, makes
+    every downstream git call and relative path resolve from the root regardless of
+    where the agent invoked the command.
+    """
     try:
-        subprocess.run(
-            ['git', 'rev-parse', '--git-dir'],
-            check=True, capture_output=True,
-        )
+        top = subprocess.run(
+            ['git', 'rev-parse', '--show-toplevel'],
+            check=True, capture_output=True, encoding='utf-8',
+        ).stdout.strip()
     except (subprocess.CalledProcessError, FileNotFoundError):
         sys.exit(
             "Error: This skill requires the project to be a git repository.\n"
             "       Run `git init && git add . && git commit -m \"initial\"` first."
         )
+    # Empty only in edge cases (bare repo / inside .git); nothing to chdir into then.
+    if top:
+        os.chdir(top)
 
 
 def list_current_files(config: Config = None) -> list[str]:

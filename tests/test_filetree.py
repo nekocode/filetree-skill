@@ -640,6 +640,31 @@ class TestEdgeCases:
         # Exit code is the error message string.
         assert 'git repository' in str(ei.value.code)
 
+    def test_require_git_chdirs_to_repo_root(self, git_repo, monkeypatch):
+        """Invoked from a subdir, require_git normalizes CWD back to the repo root."""
+        sub = git_repo / 'pkg' / 'nested'
+        sub.mkdir(parents=True)
+        monkeypatch.chdir(sub)
+        filetree.require_git()
+        assert Path(os.getcwd()).resolve() == git_repo.resolve()
+
+    def test_todo_from_subdir_covers_whole_repo(self, git_repo, monkeypatch):
+        """A subdir CWD must not truncate scope: paths stay repo-root-relative.
+
+        Without the chdir, git ls-files would scope to the subdir and emit
+        subdir-relative paths, silently producing a range-truncated manifest.
+        """
+        Path('a.py').write_text('print(1)\n')
+        Path('pkg').mkdir()
+        Path('pkg/b.py').write_text('x = 2\n')
+        monkeypatch.chdir(git_repo / 'pkg')
+
+        result = filetree.cmd_todo()
+
+        added_paths = {a['path'] for a in result['added']}
+        assert added_paths == {'a.py', 'pkg/b.py'}
+        assert Path(os.getcwd()).resolve() == git_repo.resolve()
+
     def test_unquote_git_path_legacy_octal(self):
         """Legacy quoted-octal paths decode back to UTF-8."""
         # Git's old quoting of 'templates/光.txt'.
