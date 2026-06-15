@@ -1,6 +1,6 @@
 {
   "name": "filetree",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Maintain FILETREE.md — one-line description per file with content hashes for staleness detection.",
   "author": {
     "name": "nekocode",
