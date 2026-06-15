@@ -1,0 +1,18 @@
+{
+  ".claude-plugin/marketplace.json": "08caa753",
+  ".claude-plugin/plugin.json": "bdf5f585",
+  ".filetree.json": "f1ebe4b0",
+  ".gitignore": "4ba0b636",
+  "README.md": "211f88b9",
+  "README.zh.md": "2736bdf6",
+  "commands/init.md": "e4d39297",
+  "commands/lint.md": "51b4c1ef",
+  "commands/update.md": "59561b5d",
+  "docs/index.html": "364304fe",
+  "skills/filetree/SKILL.md": "5de375f5",
+  "skills/filetree/scripts/filetree.py": "da9e4dd3",
+  "skills/filetree/scripts/filetree_config.py": "c98f33fe",
+  "tests/conftest.py": "70cebe07",
+  "tests/test_filetree.py": "219fe72d",
+  "tests/test_filetree_config.py": "cc0b965b"
+}
