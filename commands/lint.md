@@ -1,12 +1,12 @@
 ---
 description: Report drift between FILETREE.md and current repo, read-only. Prompts to run /filetree:update on drift.
-allowed-tools: Bash(python:*)
+allowed-tools: Bash(python3:*)
 ---
 
 Run the drift check and present results to the user:
 
 ```bash
-python "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" lint
+python3 "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" lint
 ```
 
 The script outputs JSON and exits 1 if there is any drift, 0 if clean.

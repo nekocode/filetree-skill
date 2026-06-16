@@ -69,7 +69,8 @@ Optional. Drop a `.filetree.json` at the repo root and commit it to share with t
   "manifest_path": "docs/FILETREE.md",
   "exclude": ["migrations/", "**/*.gen.ts", "/build"],
   "include": ["*.svg"],
-  "language": "zh"
+  "language": "zh",
+  "commit_guard": true
 }
 ```
 
@@ -79,6 +80,7 @@ Optional. Drop a `.filetree.json` at the repo root and commit it to share with t
 | `exclude` | gitignore-style patterns to keep tracked files OUT of the manifest | `[]` |
 | `include` | gitignore-style patterns to index files normally skipped (e.g. `*.svg`) | `[]` |
 | `language` | Pin the summary language (e.g. `"zh"`) instead of auto-detecting | `null` |
+| `commit_guard` | Intercept a Claude-issued `git commit` and auto-update `FILETREE.md` | `false` |
 
 `exclude` / `include` accept full gitignore syntax (`/build`, `**`, `!keep.gen.ts`, trailing-slash dirs). Invalid config fails fast with a clear error.
 
@@ -106,20 +108,20 @@ _Auto-maintained by `/filetree:update`. Content hashes live in the sidecar `FILE
 | Requirement | Version | Notes |
 |---|---|---|
 | `git` | any modern release | Required at runtime; non-git repos fail fast with a clear error |
-| `python` | ≥ 3.9 | Uses PEP 585 `list[dict]` builtin generics. Stdlib only — zero third-party deps |
+| `python3` | ≥ 3.9 | Uses PEP 585 `list[dict]` builtin generics. Stdlib only — zero third-party deps. The plugin invokes `python3` (the `python` command is absent on modern macOS / fresh Linux) |
 | Claude Code | any | Plugin format. `claude` is shipped as a native binary; Node is not required |
 
 ## Development
 
 ```sh
 # install pytest if you don't have it
-python -m pip install pytest pytest-cov
+python3 -m pip install pytest pytest-cov
 
 # run tests
-python -m pytest tests/ -q
+python3 -m pytest tests/ -q
 
 # with coverage (target: 100% lines)
-python -m pytest tests/ --cov=filetree --cov-report=term-missing
+python3 -m pytest tests/ --cov=filetree --cov-report=term-missing
 ```
 
 Tests load the script via `importlib` (see `tests/conftest.py`), so no package install is needed.
@@ -127,14 +129,14 @@ Tests load the script via `importlib` (see `tests/conftest.py`), so no package i
 Lint your own `FILETREE.md` while iterating:
 
 ```sh
-python skills/filetree/scripts/filetree.py lint
+python3 skills/filetree/scripts/filetree.py lint
 ```
 
 Exit code 1 = drift, 0 = clean. Wire it into pre-commit or CI as needed:
 
 ```yaml
 # .github/workflows/filetree.yml
-- run: python skills/filetree/scripts/filetree.py lint
+- run: python3 skills/filetree/scripts/filetree.py lint
 ```
 
 ## License

@@ -45,6 +45,7 @@ class TestLoadConfig:
         cfg = filetree_config.load_config()
         assert cfg.manifest_path == 'FILETREE.md'
         assert cfg.exclude == [] and cfg.include == [] and cfg.language is None
+        assert cfg.commit_guard is False
 
     def test_full_valid_config(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -53,12 +54,14 @@ class TestLoadConfig:
             'exclude': ['migrations/*'],
             'include': ['*.svg'],
             'language': 'zh',
+            'commit_guard': True,
         }), encoding='utf-8')
         cfg = filetree_config.load_config()
         assert cfg.manifest_path == 'docs/TREE.md'
         assert cfg.exclude == ['migrations/*']
         assert cfg.include == ['*.svg']
         assert cfg.language == 'zh'
+        assert cfg.commit_guard is True
 
     def test_language_null_is_none(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -82,6 +85,8 @@ class TestLoadConfig:
         ('{"exclude": "not-a-list"}', 'list of strings'),
         ('{"include": [1, 2]}', 'list of strings'),
         ('{"language": ""}', 'non-empty string or null'),
+        ('{"commit_guard": "yes"}', 'must be a boolean'),
+        ('{"commit_guard": 1}', 'must be a boolean'),
     ])
     def test_invalid_config_exits_with_context(self, tmp_path, monkeypatch, payload, needle):
         monkeypatch.chdir(tmp_path)
@@ -113,10 +118,12 @@ class TestLoadConfig:
         monkeypatch.chdir(tmp_path)
         Path('.filetree.json').write_text(json.dumps({
             'manifest_path': 'FILETREE.md', 'exclude': [], 'include': [], 'language': None,
+            'commit_guard': False,
         }), encoding='utf-8')
         cfg, default = filetree_config.load_config(), filetree_config.Config()
-        assert (cfg.manifest_path, cfg.exclude, cfg.include, cfg.language) == (
-            default.manifest_path, default.exclude, default.include, default.language)
+        assert (cfg.manifest_path, cfg.exclude, cfg.include, cfg.language, cfg.commit_guard) == (
+            default.manifest_path, default.exclude, default.include, default.language,
+            default.commit_guard)
 
 
 class TestMatchGitignore:

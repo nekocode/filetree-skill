@@ -9,5 +9,6 @@
   "repository": "https://github.com/nekocode/filetree-skill",
   "license": "MIT",
   "commands": "./commands/",
-  "skills": "./skills/"
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json"
 }

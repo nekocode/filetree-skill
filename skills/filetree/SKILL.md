@@ -153,7 +153,7 @@ purely off `batches`:
 - **0 batches** → no LLM work; no part files exist to glob, so apply the empty
   payload via stdin (it still syncs removed/renamed from repo state):
   ```bash
-  echo '{"updates": []}' | python .../filetree.py apply
+  echo '{"updates": []}' | python3 .../filetree.py apply
   ```
 - **1 batch** → process it inline yourself: Read the one batch file, decide each
   item, write `<split_dir>/part_00.json`.
@@ -174,7 +174,7 @@ removed/renamed are recomputed from repo state, so neither belongs here:
 Apply all parts in one call (the shell expands the glob, the script merges):
 
 ```bash
-python .../filetree.py apply <split_dir>/part_*.json
+python3 .../filetree.py apply <split_dir>/part_*.json
 ```
 
 ### Coverage gate — evidence from `apply`, never a hand-rolled diff

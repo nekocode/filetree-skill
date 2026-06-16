@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'p=$(cat); case \"$p\" in *commit*) printf \"%s\" \"$p\" | python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/commit_guard.py\" ;; esac'",
+            "timeout": 30,
+            "statusMessage": "filetree: checking manifest before commit"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,6 +1,6 @@
 ---
 description: Generate FILETREE.md from scratch. Confirms overwrite if it already exists.
-allowed-tools: Read, Edit, Write, Bash(python:*), Task, AskUserQuestion
+allowed-tools: Read, Edit, Write, Bash(python3:*), Task, AskUserQuestion
 ---
 
 Generate FILETREE.md from scratch for the current repository.
@@ -34,7 +34,7 @@ never re-parse `.filetree.json` yourself.
       (relocate the manifest, add `exclude` / `include`, pin a `language`), and
       `wire-target` / `todo` below will pick up whatever they save. On **keep**,
       proceed. On **discard**, delete the file you just created
-      (`python -c "import os; os.remove('.filetree.json')"`) and proceed with defaults.
+      (`python3 -c "import os; os.remove('.filetree.json')"`) and proceed with defaults.
       If `.filetree.json` ALREADY exists, do nothing here — never create, edit, or
       remove a pre-existing one (it's the user's, and may already be customized).
       ```json
@@ -50,7 +50,7 @@ never re-parse `.filetree.json` yourself.
       `manifest_exists`, and for each of `CLAUDE.md` / `AGENTS.md`
       `{exists, is_symlink, real_path, matches}`:
       ```bash
-      python "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" wire-target
+      python3 "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" wire-target
       ```
       If `manifest_exists` is `true`, ask the user to confirm overwrite (they likely
       meant `/filetree:update`); on decline, stop — do not enter step 2. Skip the
@@ -87,7 +87,7 @@ never re-parse `.filetree.json` yourself.
 3. **Generate work plan.** One call; the script chunks and writes the work to
    files (you never count or split):
    ```bash
-   python "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" todo --split
+   python3 "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" todo --split
    ```
    With no existing manifest, every tracked file is new work, written into the
    `batches` files (the full `added` / `changed` lists are omitted from `--split`
@@ -124,7 +124,7 @@ never re-parse `.filetree.json` yourself.
 5. **Apply** all parts in one call (shell expands the glob; the script merges and
    computes hashes from disk):
    ```bash
-   python "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" apply <split_dir>/part_*.json
+   python3 "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" apply <split_dir>/part_*.json
    ```
    Part files carry only `{"updates": [{"path", "summary"}]}`. For the inline
    1-batch case you may instead pipe that one payload via stdin. (An empty repo

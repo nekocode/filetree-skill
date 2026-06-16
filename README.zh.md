@@ -69,7 +69,8 @@ Agent 就会把 `FILETREE.md` 当索引读 —— 一次读取，省掉摸索阶
   "manifest_path": "docs/FILETREE.md",
   "exclude": ["migrations/", "**/*.gen.ts", "/build"],
   "include": ["*.svg"],
-  "language": "zh"
+  "language": "zh",
+  "commit_guard": true
 }
 ```
 
@@ -79,6 +80,7 @@ Agent 就会把 `FILETREE.md` 当索引读 —— 一次读取，省掉摸索阶
 | `exclude` | gitignore 风格模式，把已跟踪文件移出 manifest | `[]` |
 | `include` | gitignore 风格模式，索引默认会跳过的文件（如 `*.svg`） | `[]` |
 | `language` | pin summary 语言（如 `"zh"`），不走自动探测 | `null` |
+| `commit_guard` | 拦截 Claude 发起的 `git commit`，自动更新 `FILETREE.md` | `false` |
 
 `exclude` / `include` 支持完整 gitignore 语法（`/build`、`**`、`!keep.gen.ts`、目录尾斜杠）。配置非法立即报错。
 
@@ -106,20 +108,20 @@ _Auto-maintained by `/filetree:update`. Content hashes live in the sidecar `FILE
 | 依赖 | 版本 | 备注 |
 |---|---|---|
 | `git` | 任意现代版本 | 运行期必须；非 git 仓库立刻报错 |
-| `python` | ≥ 3.9 | 用 PEP 585 `list[dict]` 内建泛型；纯 stdlib，零第三方包 |
+| `python3` | ≥ 3.9 | 用 PEP 585 `list[dict]` 内建泛型；纯 stdlib，零第三方包。插件统一调用 `python3`（现代 macOS / 全新 Linux 无 `python` 命令） |
 | Claude Code | 任意 | Plugin 形态。`claude` 已是原生二进制，不依赖 Node |
 
 ## 开发
 
 ```sh
 # 没装 pytest 先装
-python -m pip install pytest pytest-cov
+python3 -m pip install pytest pytest-cov
 
 # 跑测试
-python -m pytest tests/ -q
+python3 -m pytest tests/ -q
 
 # 含覆盖率（目标：100% 行覆盖）
-python -m pytest tests/ --cov=filetree --cov-report=term-missing
+python3 -m pytest tests/ --cov=filetree --cov-report=term-missing
 ```
 
 测试通过 `importlib` 加载脚本（见 `tests/conftest.py`），无需 package install。
@@ -127,14 +129,14 @@ python -m pytest tests/ --cov=filetree --cov-report=term-missing
 迭代时随手 lint 自己的 `FILETREE.md`：
 
 ```sh
-python skills/filetree/scripts/filetree.py lint
+python3 skills/filetree/scripts/filetree.py lint
 ```
 
 退出码 1 = 有漂移，0 = 干净。挂 pre-commit 或 CI：
 
 ```yaml
 # .github/workflows/filetree.yml
-- run: python skills/filetree/scripts/filetree.py lint
+- run: python3 skills/filetree/scripts/filetree.py lint
 ```
 
 ## 协议

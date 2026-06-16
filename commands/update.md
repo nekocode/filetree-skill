@@ -1,6 +1,6 @@
 ---
 description: Sync FILETREE.md with current repository state — handles added / changed / removed / renamed.
-allowed-tools: Read, Bash(python:*), Task
+allowed-tools: Read, Bash(python3:*), Task
 ---
 
 Sync FILETREE.md with the current state of the repository.
@@ -20,7 +20,7 @@ when set.
 1. **Generate work plan.** One call; the script chunks and writes the work to
    files (you never count or split):
    ```bash
-   python "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" todo --split
+   python3 "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" todo --split
    ```
    The output carries a `config` block (`manifest_path`, `language`) reflecting
    `.filetree.json` — read both from there, never re-parse the config file. If
@@ -54,12 +54,12 @@ when set.
 3. **Apply** all parts in one call (shell expands the glob; the script merges,
    computes hashes from disk, and syncs removed/renamed itself):
    ```bash
-   python "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" apply <split_dir>/part_*.json
+   python3 "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" apply <split_dir>/part_*.json
    ```
    Part files carry only `{"updates": [{"path", "summary"}]}`. For the inline
    1-batch case you may instead pipe that one payload via stdin. For **0 batches**
    (deletion/rename-only drift) there are no part files to glob — pipe an empty
-   payload so apply still runs: `echo '{"updates": []}' | python ... apply`.
+   payload so apply still runs: `echo '{"updates": []}' | python3 ... apply`.
 
 4. **Verify coverage, then report.** The completion gate is `missing_from_manifest`
    being empty; `skipped_unchanged_new` / `skipped_missing_path` are bad summaries to

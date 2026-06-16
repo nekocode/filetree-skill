@@ -3,7 +3,7 @@
 
 # PEP 604 `str | None` is evaluated at class-body time (the Config dataclass field),
 # which would TypeError on Python 3.9; future-annotations keeps annotations lazy so
-# the documented `python >= 3.9` floor actually holds.
+# the documented `python3 >= 3.9` floor actually holds.
 from __future__ import annotations
 
 import json
@@ -59,9 +59,13 @@ class Config:
     exclude: list[str] = field(default_factory=list)
     include: list[str] = field(default_factory=list)
     language: str | None = None
+    # Opt-in: when true, the plugin's PreToolUse hook blocks a Claude-issued
+    # `git commit` while FILETREE.md is stale (drift detected by `lint`). Off by
+    # default so installing the plugin never silently gates anyone's commits.
+    commit_guard: bool = False
 
 
-_CONFIG_KEYS = {'manifest_path', 'exclude', 'include', 'language'}
+_CONFIG_KEYS = {'manifest_path', 'exclude', 'include', 'language', 'commit_guard'}
 
 
 def load_config() -> Config:
@@ -93,6 +97,8 @@ def load_config() -> Config:
         cfg.include = _validate_str_list(raw['include'], 'include')
     if raw.get('language') is not None:
         cfg.language = _validate_language(raw['language'])
+    if 'commit_guard' in raw:
+        cfg.commit_guard = _validate_bool(raw['commit_guard'], 'commit_guard')
     return cfg
 
 
@@ -120,6 +126,14 @@ def _validate_manifest_path(value) -> str:
 def _validate_str_list(value, key) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
         sys.exit(f"Error: .filetree.json `{key}` must be a list of strings")
+    return value
+
+
+def _validate_bool(value, key) -> bool:
+    # Strict: only a JSON boolean. Accepting "true"/1 would invite ambiguity about
+    # what counts as on, and this flag gates whether commits get blocked.
+    if not isinstance(value, bool):
+        sys.exit(f"Error: .filetree.json `{key}` must be a boolean (true/false)")
     return value
 
 
