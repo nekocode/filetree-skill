@@ -22,7 +22,7 @@ The manifest path is configurable via `.filetree.json`. The script is the only c
         "exclude": [],
         "include": [],
         "language": null,
-        "commit_guard": false
+        "commit_guard": true
       }
       ```
 
