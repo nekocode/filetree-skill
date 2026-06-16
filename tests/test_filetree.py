@@ -682,18 +682,40 @@ class TestWireTarget:
         assert out['CLAUDE.md']['real_path'] == os.path.realpath('.ai/rules.md')
         assert out['AGENTS.md'] == {'exists': False}
 
-    def test_reports_existing_filetree_reference(self, git_repo):
+    def test_bullet_reference_surfaces_in_matches_but_is_not_wired(self, git_repo):
+        # A bare bullet mentioning the manifest is NOT a wire (no `## ` section heading):
+        # it surfaces in `matches` for the edit preview, but `wired` stays false so the
+        # agent still appends the dedicated section.
         Path('CLAUDE.md').write_text(
             '# Rules\n\n## References\n\n- `./FILETREE.md` — index\n', encoding='utf-8')
         out = filetree.cmd_wire_target()
         assert out['CLAUDE.md']['is_symlink'] is False
         assert any('FILETREE.md' in m for m in out['CLAUDE.md']['matches'])
+        assert out['CLAUDE.md']['wired'] is False
+
+    def test_wired_true_on_section_heading(self, git_repo):
+        # The wire writes a `## FILETREE.md` section; a heading referencing the manifest
+        # is the idempotency signal, even when the body prose is reworded/localized.
+        Path('CLAUDE.md').write_text(
+            '# Rules\n\n## FILETREE.md\n\n按目录索引每个文件。先读它再 `ls`/`grep`。\n',
+            encoding='utf-8')
+        out = filetree.cmd_wire_target()
+        assert out['CLAUDE.md']['wired'] is True
+
+    def test_do_not_edit_warning_is_not_wired(self, git_repo):
+        # A negative prose mention ("do not edit FILETREE.md") must not read as wired.
+        Path('AGENTS.md').write_text(
+            '# Agents\n\nNote: do not edit FILETREE.md by hand.\n', encoding='utf-8')
+        out = filetree.cmd_wire_target()
+        assert out['AGENTS.md']['matches'] != []
+        assert out['AGENTS.md']['wired'] is False
 
     def test_plain_file_no_reference(self, git_repo):
         Path('AGENTS.md').write_text('# Agents\n\njust prose\n', encoding='utf-8')
         out = filetree.cmd_wire_target()
         assert out['AGENTS.md']['exists'] is True
         assert out['AGENTS.md']['matches'] == []
+        assert out['AGENTS.md']['wired'] is False
 
     def test_main_wire_target_emits_json(self, git_repo, capsys, monkeypatch):
         Path('CLAUDE.md').write_text('# x\n', encoding='utf-8')
@@ -1092,6 +1114,14 @@ class TestConfigIntegration:
         out = filetree.cmd_wire_target()
         assert out['manifest_path'] == 'TREE.md'
         assert any('TREE.md' in m for m in out['CLAUDE.md']['matches'])
+        assert out['CLAUDE.md']['wired'] is False  # bullet, not a `## ` section
+
+    def test_wire_target_wired_on_custom_path_heading(self, git_repo):
+        Path('.filetree.json').write_text(json.dumps({'manifest_path': 'TREE.md'}),
+                                          encoding='utf-8')
+        Path('CLAUDE.md').write_text('# Rules\n\n## TREE.md\n\nindex\n', encoding='utf-8')
+        out = filetree.cmd_wire_target()
+        assert out['CLAUDE.md']['wired'] is True
 
     def test_manifest_exists_surfaced_in_todo(self, git_repo):
         Path('a.py').write_text('x\n')

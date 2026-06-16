@@ -45,18 +45,31 @@ claude --plugin-dir .
 
 ## 接入 CLAUDE.md / AGENTS.md
 
-`/filetree:init` 首次执行时会顺手做 —— 扫 repo 根的 `CLAUDE.md` / `AGENTS.md`，已经引用 `FILETREE.md` 的跳过，剩下的按文件原有结构提议一条引用 bullet（位置和 bullet 风格自适应），每次落盘前你都先确认。
+`/filetree:init` 首次执行时会顺手做 —— 扫 repo 根的 `CLAUDE.md` / `AGENTS.md`，已经有 `## FILETREE.md` 子章节的跳过，剩下的提议一个独立的 `## FILETREE.md` 子章节（按文件语言改写），每次落盘前你都先确认。
 
 注意事项：
 
 - `CLAUDE.md` 与 `AGENTS.md` 都不存在时，plugin 不会替你创建 —— 你自己挑要不要建。建完重跑 `/filetree:init` 即可 wire。
 - wire 只在 init 时做一次。后续才加 `CLAUDE.md` / `AGENTS.md`，重跑 `/filetree:init`（已存在的 `FILETREE.md` 会问要不要覆盖）或者手动接。
 
-想手动接入，往 `CLAUDE.md` 里加这样一行：
+想手动接入，往 `CLAUDE.md` 里加这样一段：
 
-```markdown
-- `./FILETREE.md` —— 各文件职责索引。鸟瞰仓库 / 定位实现前先读，可代替 `ls` 与 `grep`。
+`````markdown
+## FILETREE.md
+
+`FILETREE.md` 按目录分组，逐文件一行点明职责。`ls`/`grep`/`find` 之前先读它按用途定位代码 —— 把「搜仓库」变成「查索引」。自动维护，勿手改。
+
 ```
+## (root)/
+
+- `manage.py`：Django CLI 入口
+
+## src/auth/
+
+- `jwt.py`：JWT 中间件；解析 token，注入 user_id
+- `session.py`：基于 Redis 的服务端会话存储
+```
+`````
 
 Agent 就会把 `FILETREE.md` 当索引读 —— 一次读取，省掉摸索阶段几十次 `ls` / `grep` / `cat`。
 
@@ -91,14 +104,14 @@ Agent 就会把 `FILETREE.md` 当索引读 —— 一次读取，省掉摸索阶
 
 _Auto-maintained by `/filetree:update`. Content hashes live in the sidecar `FILETREE.hash.json`; do not edit it by hand._
 
+## (root)/
+
+- `README.md`: 项目入口说明
+
 ## src/auth/
 
 - `middleware.py`: JWT 校验中间件，从请求头解析 token 并注入 user_id 到上下文
 - `jwt_utils.py`: JWT 签发与校验的纯函数工具，不依赖 framework
-
-## (root)/
-
-- `README.md`: 项目入口说明
 ```
 
 - 二级标题 `## dir/` = 完整目录路径；根目录文件归 `## (root)/`

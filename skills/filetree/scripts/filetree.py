@@ -587,7 +587,8 @@ def cmd_wire_target() -> dict:
 
     `manifest_path` + `manifest_exists` are surfaced too so the agent wires the configured
     path (not a hardcoded FILETREE.md) and knows whether the manifest already exists without
-    a separate stat. `matches` is searched for the configured manifest path.
+    a separate stat. Per file, `wired` is the deterministic already-wired signal; `matches`
+    lists every line mentioning the configured manifest path (for the edit preview).
     """
     require_git()
     config = load_config()
@@ -595,6 +596,13 @@ def cmd_wire_target() -> dict:
     # false "already wired" hits when manifest_path has a common name (e.g. docs/index.md
     # would match an unrelated `index.md` mention). 'FILETREE.md' (default) is unchanged.
     ref_re = re.compile(re.escape(config.manifest_path), re.IGNORECASE)
+    # `wired` is the deterministic idempotency check: the wire writes a `## <manifest>`
+    # section, so a markdown heading referencing the manifest means already-wired. Done
+    # in code (not left to the agent scanning `matches`) so re-running /filetree:init is
+    # reliably idempotent — a bare path / link / prose / "do not edit" mention is not a
+    # heading and so never counts. Heading level is lenient (#..######) in case the body
+    # gets reworded; the manifest reference is what's load-bearing.
+    heading_re = re.compile(r'^\s{0,3}#{1,6}\s')
     out = {
         'manifest_path': config.manifest_path,
         'manifest_exists': Path(config.manifest_path).exists(),
@@ -606,15 +614,17 @@ def cmd_wire_target() -> dict:
             continue
         # read_text follows the symlink to the real content.
         text = p.read_text(encoding='utf-8', errors='replace')
+        lines = text.splitlines()
         out[name] = {
             'exists': True,
             'is_symlink': p.is_symlink(),
             # Absolute real path — the agent must Edit THIS, never the link name.
             'real_path': os.path.realpath(name),
-            # Lines mentioning the manifest, so the agent can judge "already wired?"
-            # without re-reading (a backticked path / link = wired; prose / a
-            # "do not edit" warning = not a real reference).
-            'matches': [ln for ln in text.splitlines() if ref_re.search(ln)],
+            # True iff a heading line references the manifest (the wire section). This is
+            # the skip/wire signal; `matches` below is kept only for the agent's diff preview.
+            'wired': any(heading_re.match(ln) and ref_re.search(ln) for ln in lines),
+            # All lines mentioning the manifest, for the agent's old → new edit preview.
+            'matches': [ln for ln in lines if ref_re.search(ln)],
         }
     return out
 

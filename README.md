@@ -45,18 +45,31 @@ All commands refuse to commit `FILETREE.md`. You review the diff and commit your
 
 ## Wire it into CLAUDE.md / AGENTS.md
 
-`/filetree:init` handles this on first run — it scans the repo root for `CLAUDE.md` / `AGENTS.md`, skips files already referencing `FILETREE.md`, and for the rest proposes a bullet whose location and style matches the existing file. You confirm each edit before it lands.
+`/filetree:init` handles this on first run — it scans the repo root for `CLAUDE.md` / `AGENTS.md`, skips files that already have a `## FILETREE.md` section, and for the rest proposes a dedicated `## FILETREE.md` section (rendered in the file's language). You confirm each edit before it lands.
 
 Caveats:
 
 - If neither `CLAUDE.md` nor `AGENTS.md` exists, the plugin won't create one — it's your call which (if any) to seed. Create the file you want, then re-run `/filetree:init`.
 - Wiring runs at init time only. If you add `CLAUDE.md` / `AGENTS.md` later, re-run `/filetree:init` (it'll ask before overwriting `FILETREE.md`) or wire by hand.
 
-To wire by hand, drop a line like this into your `CLAUDE.md`:
+To wire by hand, drop a section like this into your `CLAUDE.md`:
 
-```markdown
-- `./FILETREE.md` — Per-file purpose index. Read before `ls` / `grep` when overviewing the repo or locating an implementation.
+`````markdown
+## FILETREE.md
+
+`FILETREE.md` indexes every file with a one-line role summary, grouped by directory. Read it to find code by purpose before `ls`/`grep`/`find` — it turns "search the repo" into "look it up". Auto-maintained; don't hand-edit.
+
 ```
+## (root)/
+
+- `manage.py`: Django CLI entrypoint
+
+## src/auth/
+
+- `jwt.py`: JWT middleware; parses token, injects user_id
+- `session.py`: Redis-backed server-side session store
+```
+`````
 
 The agent then treats `FILETREE.md` as a cheap index — one read replaces dozens of `ls` / `grep` / `cat` calls during orientation.
 
