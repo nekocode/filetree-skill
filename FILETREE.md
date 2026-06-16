@@ -12,7 +12,7 @@ _Auto-maintained by `/filetree:update`. Content hashes live in the sidecar `FILE
 ## .claude-plugin/
 
 - `marketplace.json`: Claude Code marketplace manifest; lists the filetree plugin, its source and version for `/plugin marketplace add`
-- `plugin.json`: Plugin manifest; declares name, version, author, license, and the commands/ and skills/ directories
+- `plugin.json`: Plugin manifest; declares name, version, description, author, repository, and license
 
 ## commands/
 
