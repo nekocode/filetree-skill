@@ -412,22 +412,18 @@
       font-style: italic;
     }
 
-    .m-dir {
+    .m-section {
       font-family: var(--font-mono);
       font-size: 0.74rem;
-      color: var(--ink-1);
-      padding-block: 3px;
+      color: var(--ink-2);
+      margin-top: var(--space-4);
+      margin-bottom: var(--space-2);
       font-weight: 500;
     }
-    .m-dir::before {
-      content: '- ';
-      color: var(--ink-3);
-      font-weight: 400;
+    .m-section::before {
+      content: '## ';
+      color: var(--mark-soft);
     }
-
-    /* Tree depth indentation: 2 spaces per level, mirroring the manifest. */
-    .d1 { padding-left: 1.1em; }
-    .d2 { padding-left: 2.2em; }
 
     .m-entries { list-style: none; }
 
@@ -1068,9 +1064,8 @@
       <div class="m-header"># Project Filetree</div>
       <div class="m-byline"><em>auto-maintained by /filetree:update</em></div>
 
-      <div class="m-dir">src</div>
-      <div class="m-dir d1">auth</div>
-      <ul class="m-entries d2" id="entriesA">
+      <div class="m-section">src/auth/</div>
+      <ul class="m-entries" id="entriesA">
         <li class="m-entry" data-key="middleware">
           <span class="m-entry-body">
             <span class="name">middleware.py</span>JWT validation; parses bearer, injects user_id into ctx
@@ -1085,6 +1080,7 @@
         </li>
       </ul>
 
+      <div class="m-section">(root)/</div>
       <ul class="m-entries" id="entriesB">
         <li class="m-entry" data-key="readme">
           <span class="m-entry-body">

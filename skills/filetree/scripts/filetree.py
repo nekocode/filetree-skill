@@ -20,22 +20,20 @@ from filetree_config import (
     load_config,
 )
 
-# Nested markdown list format. Indent is 2 spaces per depth level (depth = indent / 2).
-#   File line: `<indent>- `name`: summary`     (backtick-quoted; hash lives in the sidecar)
-#   Dir line:  `<indent>- name`                (no backtick, structural only)
-# The backtick prefix is what tells a file line apart from a directory line.
-# DIR_RE is only ever matched against the machine-written manifest, which has no
-# prose bullets — a stray top-level `- note` would otherwise read as a directory.
+# Section-grouped markdown format. A `## dir/` heading names a directory; the file
+# lines beneath it carry `- `name`: summary`. Root-level files live under `## (root)/`.
+# A heading states the FULL directory path, so an agent reads a file's location
+# directly off the nearest section — no indentation-depth reconstruction needed.
 #
-# The trailing ` <!--hash:xxxxxxxx-->` group is OPTIONAL: current manifests carry no
-# inline hash (it moved to FILETREE.hash.json), but a pre-sidecar manifest still does.
-# Matching both lets parse_manifest auto-migrate — it reads the legacy inline hash, and
-# the next write_manifest drops it (the hash is now persisted in the sidecar instead).
-FILE_RE = re.compile(
-    r'^(?P<indent>(?:  )*)- `(?P<name>[^`]+)`: (?P<summary>.+?)'
+# The hash lives in the sidecar FILETREE.hash.json, joined by full path. The trailing
+# ` <!--hash:xxxxxxxx-->` group is OPTIONAL: current manifests carry no inline hash, but
+# a pre-sidecar manifest still does. Matching both lets parse_manifest auto-migrate — it
+# reads the legacy inline hash, and the next write_manifest drops it.
+ENTRY_RE = re.compile(
+    r'^- `(?P<name>[^`]+)`: (?P<summary>.+?)'
     r'(?: <!--hash:(?P<hash>[a-f0-9]+)-->)?\s*$'
 )
-DIR_RE = re.compile(r'^(?P<indent>(?:  )*)- (?P<name>(?!`).+?)\s*$')
+SECTION_RE = re.compile(r'^## (?P<dir>.+?)/?\s*$')
 
 
 def require_git():
@@ -278,11 +276,12 @@ def write_hashes(entries: list[dict], manifest_path: str = DEFAULT_MANIFEST_PATH
 
 
 def parse_manifest(manifest_path: str = DEFAULT_MANIFEST_PATH) -> list[dict]:
-    """Read the nested-list manifest into [{path, summary, hash}].
+    """Read the section-grouped manifest into [{path, summary, hash}].
 
-    Reconstructs each file's full path from its indentation depth: a stack holds
-    the directory name at every depth, so a file at depth d joins dir_stack[:d]
-    with its own name. Directory lines only update the stack; files emit entries.
+    Each `## dir/` heading sets the current directory; the file lines under it join
+    that directory with their own name to form the full path. Root files sit under
+    `## (root)/` (empty directory). A legacy entry whose name already holds a `/` is
+    treated as a full path verbatim.
 
     The hash comes from the sidecar (read_hashes), joined by path. A legacy inline
     `<!--hash:-->` is used only as a fallback when the sidecar lacks that path — this
@@ -294,40 +293,38 @@ def parse_manifest(manifest_path: str = DEFAULT_MANIFEST_PATH) -> list[dict]:
         return []
     sidecar_hashes = read_hashes(manifest_path)
     entries = []
-    dir_stack: list[str] = []  # dir_stack[d] = directory name declared at depth d
+    section = ''  # current directory; '' = repo root
     for line in mpath.read_text(encoding='utf-8').splitlines():
-        m = FILE_RE.match(line)
+        m = SECTION_RE.match(line)
         if m:
-            depth = len(m.group('indent')) // 2
+            section = m.group('dir').strip().rstrip('/')
+            if section == '(root)':
+                section = ''
+            continue
+        m = ENTRY_RE.match(line)
+        if m:
             name = _unquote_git_path(m.group('name'))
-            parent = '/'.join(dir_stack[:depth])
-            full_path = f'{parent}/{name}' if parent else name
+            # A name with '/' is a legacy entry that already holds its full path;
+            # otherwise join the section directory (if any) onto the bare name.
+            if section and '/' not in name:
+                full_path = f'{section}/{name}'
+            else:
+                full_path = name
             entries.append({
                 'path': full_path,
                 'summary': m.group('summary').strip(),
                 'hash': sidecar_hashes.get(full_path, m.group('hash') or ''),
             })
-            continue
-        m = DIR_RE.match(line)
-        if m:
-            depth = len(m.group('indent')) // 2
-            # Truncate to this depth, then push: a shallower dir resets deeper ones.
-            # DIR_RE's `\s*$` already excludes trailing whitespace — no strip needed.
-            del dir_stack[depth:]
-            dir_stack.append(_unquote_git_path(m.group('name')))
     return entries
 
 
 def write_manifest(entries: list[dict], manifest_path: str = DEFAULT_MANIFEST_PATH) -> None:
-    """Render entries as a nested markdown list (a directory tree), sorted stably."""
-    # Build a nested tree from full paths: each node holds child dirs + leaf files.
-    root: dict = {'dirs': {}, 'files': []}
+    """Group entries by directory, sort stably, write `## dir/` sections."""
+    # Split each path once into (directory, filename); both halves are reused below.
+    by_dir: dict[str, list[tuple[str, dict]]] = {}
     for e in entries:
-        *dirs, _name = e['path'].split('/')
-        node = root
-        for d in dirs:
-            node = node['dirs'].setdefault(d, {'dirs': {}, 'files': []})
-        node['files'].append(e)
+        d, _, filename = e['path'].rpartition('/')  # 'a/b.py' -> ('a','b.py'); 'r.py' -> ('','r.py')
+        by_dir.setdefault(d, []).append((filename, e))
 
     sidecar_name = hash_path_for(manifest_path)
     lines = [
@@ -338,20 +335,14 @@ def write_manifest(entries: list[dict], manifest_path: str = DEFAULT_MANIFEST_PA
         '',
     ]
 
-    def emit(node: dict, depth: int) -> None:
-        indent = '  ' * depth
-        # Directories first, then files; each lexicographically — stable, no spurious diffs.
-        for dname in sorted(node['dirs']):
-            lines.append(f'{indent}- {dname}')
-            emit(node['dirs'][dname], depth + 1)
-        # All files in a node share the same directory prefix, so sorting by full
-        # path is identical to sorting by basename — and avoids a Path() per compare.
-        for e in sorted(node['files'], key=lambda x: x['path']):
-            filename = e['path'].rsplit('/', 1)[-1]
-            lines.append(f"{indent}- `{filename}`: {e['summary']}")
-
-    emit(root, 0)
-    lines.append('')  # trailing newline at EOF
+    # '' (root) sorts before any named directory, so root files head the manifest.
+    for d in sorted(by_dir):
+        heading = f'{d}/' if d else '(root)/'
+        lines.append(f'## {heading}')
+        lines.append('')
+        for filename, e in sorted(by_dir[d], key=lambda x: x[1]['path']):
+            lines.append(f"- `{filename}`: {e['summary']}")
+        lines.append('')
 
     _atomic_write_text(Path(manifest_path), '\n'.join(lines))
 

@@ -31,10 +31,11 @@ class TestParseManifest:
         monkeypatch.chdir(tmp_path)
         Path('FILETREE.md').write_text(
             '# Project Filetree\n\n'
-            '- src\n'
-            '  - auth\n'
-            '    - `middleware.py`: JWT 校验中间件 <!--hash:a1b2c3d4-->\n'
-            '    - `jwt_utils.py`: JWT 工具 <!--hash:e5f6a7b8-->\n'
+            '## src/auth/\n\n'
+            '- `middleware.py`: JWT 校验中间件 <!--hash:a1b2c3d4-->\n'
+            '- `jwt_utils.py`: JWT 工具 <!--hash:e5f6a7b8-->\n'
+            '\n'
+            '## (root)/\n\n'
             '- `README.md`: 项目说明 <!--hash:11223344-->\n',
             encoding='utf-8',
         )
@@ -49,38 +50,48 @@ class TestParseManifest:
         assert by_path['src/auth/middleware.py']['hash'] == 'a1b2c3d4'
         assert by_path['src/auth/middleware.py']['summary'] == 'JWT 校验中间件'
 
-    def test_nested_depth_reconstructs_path(self, tmp_path, monkeypatch):
-        """A deeply nested file joins every ancestor directory into its full path."""
+    def test_deep_section_reconstructs_path(self, tmp_path, monkeypatch):
+        """A `## dir/` heading sets the full directory for every file beneath it."""
         monkeypatch.chdir(tmp_path)
         Path('FILETREE.md').write_text(
             '# Project Filetree\n\n'
-            '- skills\n'
-            '  - filetree\n'
-            '    - scripts\n'
-            '      - `filetree.py`: 核心脚本 <!--hash:4c2aec98-->\n',
+            '## skills/filetree/scripts/\n\n'
+            '- `filetree.py`: 核心脚本 <!--hash:4c2aec98-->\n',
             encoding='utf-8',
         )
         entries = filetree.parse_manifest()
         assert entries[0]['path'] == 'skills/filetree/scripts/filetree.py'
 
-    def test_sibling_dir_resets_deeper_stack(self, tmp_path, monkeypatch):
-        """A shallower directory line must reset deeper stack frames, not leak them."""
+    def test_section_switch_changes_dir(self, tmp_path, monkeypatch):
+        """A new `## dir/` heading switches the directory for the lines that follow."""
         monkeypatch.chdir(tmp_path)
         Path('FILETREE.md').write_text(
             '# Project Filetree\n\n'
-            '- a\n'
-            '  - deep\n'
-            '    - `x.py`: x <!--hash:11111111-->\n'
-            '- b\n'
-            '  - `y.py`: y <!--hash:22222222-->\n',
+            '## a/deep/\n\n'
+            '- `x.py`: x <!--hash:11111111-->\n'
+            '\n'
+            '## b/\n\n'
+            '- `y.py`: y <!--hash:22222222-->\n',
             encoding='utf-8',
         )
         paths = {e['path'] for e in filetree.parse_manifest()}
         assert paths == {'a/deep/x.py', 'b/y.py'}
 
+    def test_tolerates_full_path_entries(self, tmp_path, monkeypatch):
+        """Tolerate legacy format where an entry stores the full path inline."""
+        monkeypatch.chdir(tmp_path)
+        Path('FILETREE.md').write_text(
+            '# Project Filetree\n\n'
+            '## legacy/\n\n'
+            '- `legacy/sub/old.py`: 旧条目带完整路径 <!--hash:deadbeef-->\n',
+            encoding='utf-8',
+        )
+        entries = filetree.parse_manifest()
+        assert entries[0]['path'] == 'legacy/sub/old.py'
+
 
 class TestWriteManifest:
-    def test_tree_nesting_and_sorting(self, tmp_path, monkeypatch):
+    def test_section_grouping_and_sorting(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         entries = [
             {'path': 'README.md', 'summary': 'doc', 'hash': '11111111'},
@@ -89,10 +100,10 @@ class TestWriteManifest:
         ]
         filetree.write_manifest(entries)
         text = Path('FILETREE.md').read_text(encoding='utf-8')
-        # Directories first, then root files: the `src` dir line precedes README.md.
-        assert text.index('- src\n') < text.index('`README.md`')
-        # Nested files carry 2-space indentation under their directory; no inline hash.
-        assert '  - `a.py`: a\n' in text
+        # Section lexical order: (root) before src.
+        assert text.index('## (root)/') < text.index('## src/')
+        # File lines carry no indentation and no inline hash.
+        assert '- `a.py`: a\n' in text
         # Hashes live in the sidecar now — the manifest is pure prose.
         assert '<!--hash:' not in text
         # Entries under src in lexical order.
@@ -749,8 +760,8 @@ class TestEdgeCases:
         monkeypatch.chdir(tmp_path)
         Path('FILETREE.md').write_text(
             '# Project Filetree\n\n'
-            '- templates\n'
-            '  - `"\\345\\205\\211.txt"`: 模板 <!--hash:deadbeef-->\n',
+            '## templates/\n\n'
+            '- `"\\345\\205\\211.txt"`: 模板 <!--hash:deadbeef-->\n',
             encoding='utf-8',
         )
         entries = filetree.parse_manifest()

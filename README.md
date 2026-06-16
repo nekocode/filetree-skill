@@ -91,17 +91,20 @@ Optional. Drop a `.filetree.json` at the repo root and commit it to share with t
 
 _Auto-maintained by `/filetree:update`. Content hashes live in the sidecar `FILETREE.hash.json`; do not edit it by hand._
 
-- src
-  - auth
-    - `middleware.py`: JWT validation middleware; parses bearer token and injects user_id into request context
-    - `jwt_utils.py`: Pure JWT signing / verification helpers, framework-agnostic
+## src/auth/
+
+- `middleware.py`: JWT validation middleware; parses bearer token and injects user_id into request context
+- `jwt_utils.py`: Pure JWT signing / verification helpers, framework-agnostic
+
+## (root)/
+
 - `README.md`: Project entry doc
 ```
 
-- Nested unordered list = directory tree; 2 spaces per depth level
-- Directory line `- name` is structural; file line `` - `name`: summary `` — pure prose, no inline noise
-- Per level: directories first, then files, each lexical → no spurious diffs
-- Content hashes are stored out-of-band in `FILETREE.hash.json` (`{path: hash}`), keeping the manifest ~18% smaller and free of per-line hex noise. A pre-sidecar manifest with inline `<!--hash:-->` is auto-migrated on the next update.
+- Section heading `## dir/` = full directory path; root files under `## (root)/`
+- File line `` - `name`: summary `` — pure prose, no inline noise; an agent reads a file's location straight off its section heading
+- Sections lexical, files within lexical → no spurious diffs
+- Content hashes are stored out-of-band in `FILETREE.hash.json` (`{path: hash}`), keeping the manifest free of per-line hex noise. A pre-sidecar manifest with inline `<!--hash:-->` is auto-migrated on the next update.
 
 ## Compatibility
 
