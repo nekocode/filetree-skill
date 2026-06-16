@@ -21,7 +21,8 @@ The manifest path is configurable via `.filetree.json`. The script is the only c
         "manifest_path": "FILETREE.md",
         "exclude": [],
         "include": [],
-        "language": null
+        "language": null,
+        "commit_guard": false
       }
       ```
 
