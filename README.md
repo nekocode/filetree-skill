@@ -91,14 +91,14 @@ Optional. Drop a `.filetree.json` at the repo root and commit it to share with t
 
 _Auto-maintained by `/filetree:update`. Content hashes live in the sidecar `FILETREE.hash.json`; do not edit it by hand._
 
+## (root)/
+
+- `README.md`: Project entry doc
+
 ## src/auth/
 
 - `middleware.py`: JWT validation middleware; parses bearer token and injects user_id into request context
 - `jwt_utils.py`: Pure JWT signing / verification helpers, framework-agnostic
-
-## (root)/
-
-- `README.md`: Project entry doc
 ```
 
 - Section heading `## dir/` = full directory path; root files under `## (root)/`
