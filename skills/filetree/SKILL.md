@@ -109,8 +109,7 @@ Each `batch_NN.json` is a JSON array of todo items (added + changed). Drive it p
   ```bash
   echo '{"updates": []}' | python3 .../filetree.py apply
   ```
-- **1 batch** → process it inline yourself: Read the one batch file, decide each item, write `<split_dir>/part_00.json`.
-- **multiple batches** → spawn one `claude-haiku-4-5` sub-agent per batch (good enough, ~10x cheaper). Each sub-agent: `Read` SKILL.md, `Read` its assigned `batch_NN.json`, then write `<split_dir>/part_NN.json`. Sub-agents run in parallel and never see each other's batch.
+- **1 or more batches** → spawn one `claude-haiku-4-5` sub-agent per batch (good enough, ~10x cheaper) — **always, even for a single batch**. The main session never Reads a file or writes a summary itself; that work stays out of its context. Each sub-agent: `Read` SKILL.md, `Read` its assigned `batch_NN.json`, then write `<split_dir>/part_NN.json`. Sub-agents run in parallel and never see each other's batch.
 
 ### Part-file shape (no hand-merging, no hashes)
 
@@ -132,7 +131,7 @@ Before claiming the manifest is synced, run this gate on `apply`'s return:
 
 1. READ `missing_from_manifest` — any indexable file still without an entry (a dropped sub-agent output, a forgotten file). This is the completion gate.
 2. READ the fixable anomaly keys: `skipped_unchanged_new` (a wrong `UNCHANGED`), `skipped_missing_path` (a hallucinated path).
-3. If 1 or 2 are non-empty → summarize those files into one more part and re-run `apply` (it merges). Loop until both clear.
+3. If 1 or 2 are non-empty → spawn one more `claude-haiku-4-5` sub-agent to summarize those files. Pass it the `split_dir`, the exact paths to fix, and an output filename that does NOT collide with the existing `part_NN.json` (use `part_fixup_NN.json`, NN incrementing each retry). It writes `<split_dir>/part_fixup_NN.json`; then re-run `apply <split_dir>/part_*.json` — the glob still catches the fixup part, and `apply` merges and dedups by path. Keep this fixup off the main session too — same as the batch work. Loop until both clear.
 4. IGNORE `skipped_excluded` — real files the config keeps out, nothing to fix. Do NOT gate on `applied == received`: a legitimate `skipped_excluded` makes `applied < received` hold forever, which would loop here.
 5. ONLY THEN report — straight from `apply`'s return.
 

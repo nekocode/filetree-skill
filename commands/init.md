@@ -66,7 +66,7 @@ The manifest path is configurable via `.filetree.json`. The script is the only c
    ```
    With no existing manifest, every tracked file is new work, written into the `batches` files (the full `added` / `changed` lists are omitted from `--split` stdout — drive off `batches`). The output also carries the `config` block (`manifest_path`, `language`) — use `config.language` for the canonical language if set. A wired `CLAUDE.md` / `AGENTS.md` shows up with its post-wire hash. (A gitignored one won't appear — wiring still works on disk, but the manifest only tracks files git sees. `exclude`/`include` from `.filetree.json` are already applied.)
 
-4. **Write summaries.** Process the batches per SKILL.md "Processing the work plan" (0 → skip to apply; 1 → inline; many → one `claude-haiku-4-5` sub-agent per batch). For each item: Read the file, write a one-line summary per the SKILL.md style guide. Items with a `symlink_target` field: do not Read — write `symlink → <target>`.
+4. **Write summaries.** Process the batches per SKILL.md "Processing the work plan" (0 → skip to apply; otherwise spawn one `claude-haiku-4-5` sub-agent per batch — **every batch, including a lone one**; the main session itself never `Read`s a file or writes a summary). For each item a sub-agent Reads the file and writes a one-line summary per the SKILL.md style guide; items with a `symlink_target` field are NOT Read — write `symlink → <target>`.
 
    This is a from-scratch generation: there is no prior summary, so **every file needs a real summary**. `UNCHANGED` is never valid here — that sentinel belongs to `/filetree:update` and would be silently dropped by `apply` (init starts from an empty manifest, nothing to refresh).
 
@@ -79,9 +79,9 @@ The manifest path is configurable via `.filetree.json`. The script is the only c
    ```bash
    python3 "${CLAUDE_PLUGIN_ROOT}/skills/filetree/scripts/filetree.py" apply <split_dir>/part_*.json
    ```
-   Part files carry only `{"updates": [{"path", "summary"}]}`. For the inline 1-batch case you may instead pipe that one payload via stdin. (An empty repo yields 0 batches — there are no part files to glob; pipe `{"updates": []}` via stdin instead.)
+   Part files carry only `{"updates": [{"path", "summary"}]}`. (An empty repo yields 0 batches — there are no part files to glob; pipe `{"updates": []}` via stdin instead.)
 
-6. **Verify coverage, then report.** The completion gate is `missing_from_manifest` being empty (an indexable file with no entry — a sub-agent dropped it). If it's non-empty, summarize those files (no `UNCHANGED`) and re-run `apply` (it merges) until it clears. `skipped_unchanged_new` / `skipped_missing_path` flag bad summaries (a wrong `UNCHANGED`, or a hallucinated path) — fix and re-apply those. Ignore `skipped_excluded` (real files the config keeps out — nothing to fix; do NOT loop on `applied == received`, which these legitimately hold below). Then report: total files indexed, files skipped (binary / lock / excluded), wired files (and skipped with reason: absent / already-wired / declined), time taken.
+6. **Verify coverage, then report.** The completion gate is `missing_from_manifest` being empty (an indexable file with no entry — a sub-agent dropped it). If it's non-empty, spawn one more `claude-haiku-4-5` sub-agent — give it the `split_dir`, the exact paths, and a non-colliding output name `part_fixup_NN.json` (NN incrementing) — to summarize those files (no `UNCHANGED`), then re-run `apply <split_dir>/part_*.json` (the glob catches the fixup; it merges) until it clears — keep this fixup off the main session. `skipped_unchanged_new` / `skipped_missing_path` flag bad summaries (a wrong `UNCHANGED`, or a hallucinated path) — fix and re-apply those. Ignore `skipped_excluded` (real files the config keeps out — nothing to fix; do NOT loop on `applied == received`, which these legitimately hold below). Then report: total files indexed, files skipped (binary / lock / excluded), wired files (and skipped with reason: absent / already-wired / declined), time taken.
 
 ## Do not
 
